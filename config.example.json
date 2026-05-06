@@ -1,0 +1,101 @@
+{
+    "battery": {
+        "capacity_ah": 60.0,
+        "cell_count": 8,
+        "chemistry": "lifepo4",
+        "initial_soc": 100.0
+    },
+
+    "monitoring": {
+        "backend": "ina226",
+
+        "ina226": {
+            "i2c_bus": 1,
+            "address": "0x40",
+            "shunt_resistor": 0.01
+        },
+
+        "victron": {
+            "ble_address": "AA:BB:CC:DD:EE:FF",
+            "encryption_key": "0000000000000000",
+            "poll_interval_s": 5.0
+        }
+    },
+
+    "outage_detection": {
+        "method": "relay",
+
+        "relay": {
+            "gpio_pin": 17,
+            "debounce_ms": 200,
+            "logic": "active_low"
+        },
+
+        "monitor": {
+            "current_threshold_a": 0.05,
+            "confirm_delay_s": 2.0
+        }
+    },
+
+    "pump_control": {
+        "controllers": [],
+
+        "levels": {
+            "normal": {
+                "soc_threshold": 100,
+                "global_intensity": 100,
+                "per_device": {}
+            },
+            "eco": {
+                "soc_threshold": 60,
+                "global_intensity": 50,
+                "per_device": {}
+            },
+            "survival": {
+                "soc_threshold": 30,
+                "global_intensity": 30,
+                "per_device": {}
+            }
+        }
+    },
+
+    "mqtt": {
+        "host": "localhost",
+        "port": 1883,
+        "user": null,
+        "password": null,
+        "base_topic": "homeassistant",
+        "device_name": "reef_battery"
+    },
+
+    "network": {
+        "interface": "wlan0",
+
+        "home_wifi": {
+            "ssid": "YOUR_HOME_SSID",
+            "password": "YOUR_HOME_PASSWORD"
+        },
+
+        "failover": {
+            "enabled": true,
+            "check_delay_s": 30.0,
+            "retry_count": 3,
+            "retry_delay_s": 5.0,
+            "scan_timeout_s": 15.0,
+            "connect_timeout_s": 20.0,
+            "controller_reconnect_timeout_s": 60.0,
+            "router_check_interval_s": 60.0,
+            "router_ip": "192.168.1.1"
+        },
+
+        "hotspot": {
+            "ip": "192.168.4.1",
+            "dhcp_start": "192.168.4.10",
+            "dhcp_end": "192.168.4.50",
+            "channel": 6,
+            "controller_mac_ips": {}
+        }
+    },
+
+    "poll_interval_s": 5.0
+}
