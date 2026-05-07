@@ -124,8 +124,82 @@ if [ "${SKIP_SYSTEM_DEPS}" -eq 0 ]; then
         python3-pip python3-dev i2c-tools \
         wireless-tools curl jq git 2>/dev/null || true
 
+    # GPIO library:
+    # We need RPi.GPIO API with edge detection support. The classic
+    # `python3-rpi.gpio` package is broken on Pi 5 / kernel 6.6+ (the
+    # /sys/class/gpio interface it relies on was removed). The drop-in
+    # replacement is `python3-rpi-lgpio` (provides the same `RPi.GPIO`
+    # module name, backed by lgpio). It must NOT coexist with the old
+    # package, so we remove the old one first if present.
+    if dpkg -l python3-rpi.gpio 2>/dev/null | grep -q '^ii'; then
+        echo "  → Removing legacy python3-rpi.gpio"
+        apt-get remove -y -qq python3-rpi.gpio 2>/dev/null || true
+    fi
+    # Also clear any pip-installed RPi.GPIO that would shadow the apt one
+    pip3 uninstall -y --break-system-packages RPi.GPIO 2>/dev/null \
+        || pip3 uninstall -y RPi.GPIO 2>/dev/null || true
+
+    if apt-get install -y -qq python3-rpi-lgpio 2>/dev/null; then
+        echo "  → python3-rpi-lgpio installed (Pi 5 / kernel 6.6+ compatible)"
+    else
+        # Older Raspberry Pi OS without rpi-lgpio in apt: pip fallback.
+        echo "  → python3-rpi-lgpio not in apt, falling back to pip"
+        pip3 install --break-system-packages rpi-lgpio 2>/dev/null \
+            || pip3 install rpi-lgpio 2>/dev/null || true
+    fi
+
     # Optional packages (don't fail if unavailable)
     apt-get install -y -qq hostapd dnsmasq bluetooth bluez 2>/dev/null || true
+fi
+
+# -----------------------------------------------------------------------------
+# I2C bus enablement and sanity check
+# -----------------------------------------------------------------------------
+# INA226 is now mandatory, so /dev/i2c-1 must exist and be readable.
+# raspi-config has a non-interactive mode (do_i2c 0 = enable) that handles
+# both the boot config switch and the kernel module load. Persistence
+# across reboots is achieved by the dtparam=i2c_arm=on line in /boot.
+if [ "${SKIP_SYSTEM_DEPS}" -eq 0 ]; then
+    echo ""
+    echo -e "${BLUE}── Vérification du bus I2C / Checking I2C bus ──${NC}"
+
+    # Make sure i2c-dev is in the kernel right now (raspi-config also does
+    # this, but a previous install may have left things half-configured).
+    modprobe i2c-dev 2>/dev/null || true
+
+    if [ ! -e /dev/i2c-1 ]; then
+        echo "  → /dev/i2c-1 absent, enabling I2C via raspi-config"
+        if command -v raspi-config >/dev/null 2>&1; then
+            # do_i2c 0 = enable (counter-intuitive: 0 means "yes, enable")
+            raspi-config nonint do_i2c 0 2>/dev/null || true
+            modprobe i2c-dev 2>/dev/null || true
+        else
+            echo -e "${YELLOW}  ⚠ raspi-config absent. Activez I2C manuellement :${NC}"
+            echo "      Ajouter 'dtparam=i2c_arm=on' à /boot/firmware/config.txt"
+            echo "      Ajouter 'i2c-dev' à /etc/modules-load.d/i2c.conf"
+            echo "      puis redémarrer."
+        fi
+    fi
+
+    # Final check: device node + readable for the user that will run the
+    # service. We don't bail on failure (hardware can be plugged later),
+    # we just print a clear status line.
+    if [ -e /dev/i2c-1 ]; then
+        echo -e "  ${GREEN}✓${NC} /dev/i2c-1 present"
+        # Quick INA226 detection at the default address (0x40). Other
+        # addresses are possible (0x41/0x44/0x45 via the A0/A1 pins),
+        # so we just inform, never fail.
+        if command -v i2cdetect >/dev/null 2>&1; then
+            if i2cdetect -y 1 2>/dev/null | grep -qE ' (40|41|44|45) '; then
+                echo -e "  ${GREEN}✓${NC} I2C device found (probably the INA226)"
+            else
+                echo -e "${YELLOW}  ⚠ Aucun composant I2C détecté à 0x40/0x41/0x44/0x45.${NC}"
+                echo "      Vérifiez le câblage SDA/SCL/3V3/GND avant de démarrer."
+            fi
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ /dev/i2c-1 toujours absent. Un redémarrage est probablement requis.${NC}"
+    fi
 fi
 
 # Backup existing config if directory exists
@@ -177,11 +251,13 @@ else
 fi
 
 # Install Python dependencies
+# Note: GPIO library (RPi.GPIO via rpi-lgpio) is installed above via apt
+# to ensure Pi 5 / kernel 6.6+ compatibility -- not in this pip block.
 echo ""
 echo -e "${BLUE}${MSG_PIP}${NC}"
 pip3 install --break-system-packages \
-    smbus2 paho-mqtt requests RPi.GPIO netifaces 2>/dev/null \
-    || pip3 install smbus2 paho-mqtt requests RPi.GPIO netifaces 2>/dev/null \
+    smbus2 paho-mqtt requests netifaces 2>/dev/null \
+    || pip3 install smbus2 paho-mqtt requests netifaces 2>/dev/null \
     || true
 
 # Optional: BLE dependencies

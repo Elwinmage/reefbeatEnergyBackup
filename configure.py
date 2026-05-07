@@ -41,6 +41,111 @@ def t(fr: str, en: str) -> str:
     return fr if LANG == "fr" else en
 
 # =============================================================================
+# rfkill helpers
+# =============================================================================
+
+def rfkill_status() -> Dict[str, Dict[str, bool]]:
+    """
+    Return the rfkill state for each radio type.
+
+    Output: {"wifi": {"soft": bool, "hard": bool}, "bluetooth": {...}, ...}
+    Missing entries simply mean the radio is not present on this host.
+    """
+    state: Dict[str, Dict[str, bool]] = {}
+    try:
+        # -J gives JSON output; available on util-linux >= 2.31 (RPi OS ships it)
+        result = subprocess.run(
+            ["rfkill", "--json"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return state
+        data = json.loads(result.stdout or "{}")
+        # Newer rfkill returns {"rfkilldevices": [...]}, older {"": [...]}
+        entries = (
+            data.get("rfkilldevices")
+            or data.get("")
+            or next(iter(data.values()), [])
+            if data else []
+        )
+        for entry in entries:
+            rtype = entry.get("type", "").lower()
+            if not rtype:
+                continue
+            state[rtype] = {
+                "soft": entry.get("soft", "unblocked") == "blocked",
+                "hard": entry.get("hard", "unblocked") == "blocked",
+            }
+    except FileNotFoundError:
+        # rfkill binary not installed
+        pass
+    except (subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        pass
+    return state
+
+
+def rfkill_unblock(radio: str) -> bool:
+    """Soft-unblock a radio type ('wifi' or 'bluetooth'). Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["rfkill", "unblock", radio],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+
+
+def ensure_radios_unblocked(check_bluetooth: bool = False) -> None:
+    """
+    Ensure Wi-Fi (and optionally Bluetooth) are not soft-blocked by rfkill.
+
+    Hard blocks come from physical switches and can only be reported, not fixed.
+    Requires sudo for the unblock action; if not root, we attempt anyway and
+    fall back to a clear warning.
+    """
+    radios_to_check = ["wifi"]
+    if check_bluetooth:
+        radios_to_check.append("bluetooth")
+
+    state = rfkill_status()
+    if not state:
+        # rfkill not available -- nothing we can sensibly do, stay silent
+        return
+
+    for radio in radios_to_check:
+        # rfkill reports wifi under either "wlan" or "wifi" depending on version
+        entry = state.get(radio) or state.get("wlan" if radio == "wifi" else radio)
+        label = "Wi-Fi" if radio == "wifi" else "Bluetooth"
+
+        if entry is None:
+            warn(t(f"{label} non détecté par rfkill", f"{label} not detected by rfkill"))
+            continue
+
+        if entry["hard"]:
+            # Hard block: physical switch, cannot fix from software
+            fail(t(
+                f"{label} bloqué matériellement (interrupteur physique). "
+                "Veuillez l'activer manuellement.",
+                f"{label} hard-blocked (physical switch). Please enable it manually."
+            ))
+            continue
+
+        if entry["soft"]:
+            info(t(f"{label} bloqué (soft) par rfkill, déblocage...",
+                   f"{label} soft-blocked by rfkill, unblocking..."))
+            if rfkill_unblock(radio):
+                ok(t(f"{label} débloqué", f"{label} unblocked"))
+            else:
+                fail(t(
+                    f"Impossible de débloquer {label}. "
+                    "Relancez en root: sudo rfkill unblock " + radio,
+                    f"Cannot unblock {label}. Rerun as root: sudo rfkill unblock " + radio
+                ))
+        else:
+            ok(t(f"{label} actif (rfkill OK)", f"{label} active (rfkill OK)"))
+
+
+# =============================================================================
 # Terminal UI helpers
 # =============================================================================
 
@@ -157,22 +262,20 @@ def choose_from_list(items: list, prompt: str, multi: bool = False,
 # ReefBeat network scanner
 # =============================================================================
 
-# ReefBeat device types we care about for energy backup
+# ReefBeat device types we care about for energy backup.
+# Note: RSLED (ReefLED) intentionally excluded — energy backup focuses on
+# circulation pumps (RSWAVE) and return/skimmer pumps (RSRUN). Lighting is
+# considered acceptable to lose during a power outage.
 BACKUP_DEVICE_TYPES = {
     "RSWAVE45": "ReefWave 45",
     "RSWAVE25": "ReefWave 25",
-    "RSRUN5500": "ReefRun 5500",
-    "RSRUN9000": "ReefRun 9000",
-    "RSRUN12000": "ReefRun 12000",
-    "RSLED50": "ReefLED 50",
-    "RSLED90": "ReefLED 90",
-    "RSLED160": "ReefLED 160",
+    "RSRUN":    "ReefRun",
 }
 
 # All known ReefBeat hw_model IDs (for detection)
 ALL_REEFBEAT_MODELS = {
     "RSWAVE45", "RSWAVE25",
-    "RSRUN5500", "RSRUN9000", "RSRUN12000",
+    "RSRUN",
     "RSLED50", "RSLED90", "RSLED160",
     "RSATO", "RSDOSE", "RSMAT",
     "RSSENSE",
@@ -216,6 +319,87 @@ def probe_reefbeat(ip: str) -> Optional[Dict]:
         }
     except Exception:
         return None
+
+
+def get_reefbeat_dashboard(ip: str) -> Optional[Dict]:
+    """
+    Get the /dashboard JSON from a ReefBeat device.
+
+    Multi-pump devices (RSRUN) expose pump_1/pump_2 sub-objects with
+    individual 'name', 'type' and 'model' fields. RSWAVE has its own
+    flatter structure (and exposes "/" rather than "/dashboard" for
+    device-info — this helper is only used for RSRUN here).
+    """
+    if not HAS_REQUESTS:
+        return None
+    try:
+        r = req_lib.get(f"http://{ip}/dashboard", timeout=3)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+# Per-family pump intensity ranges.
+# Floor = lowest non-zero value the pump accepts. 0 always means OFF.
+PUMP_INTENSITY_RANGES = {
+    "RSWAVE45": {"min_running": 10, "max": 100},
+    "RSWAVE25": {"min_running": 10, "max": 100},
+    "RSRUN":    {"min_running": 40, "max": 100},
+}
+
+
+def get_intensity_range(hw_model: str) -> Tuple[int, int]:
+    """
+    Return (min_running, max) for a given hw_model.
+    A value of 0 is always allowed (=OFF) regardless of min_running.
+    """
+    rng = PUMP_INTENSITY_RANGES.get(hw_model, {"min_running": 0, "max": 100})
+    return rng["min_running"], rng["max"]
+
+
+def ask_pump_intensity(prompt: str, hw_model: str, default: int = None) -> int:
+    """
+    Ask for a pump intensity, enforcing per-model bounds.
+
+    Rules:
+      - 0 is always allowed (means OFF)
+      - otherwise must be within [min_running, max]
+    """
+    min_running, max_val = get_intensity_range(hw_model)
+
+    # Build a hint string for the user
+    if min_running > 0:
+        hint = t(
+            f"0 = OFF, sinon {min_running}–{max_val}",
+            f"0 = OFF, otherwise {min_running}–{max_val}"
+        )
+    else:
+        hint = t(f"0–{max_val}", f"0–{max_val}")
+
+    full_prompt = f"{prompt} ({hint})"
+
+    while True:
+        val = ask(full_prompt, default)
+        try:
+            n = int(val)
+        except ValueError:
+            warn(t("Entrez un nombre entier", "Enter an integer"))
+            continue
+
+        if n == 0:
+            return 0
+        if n < min_running:
+            warn(t(
+                f"Valeur trop basse pour ce modèle. Minimum en marche: {min_running}% (ou 0 pour OFF)",
+                f"Value too low for this model. Running minimum: {min_running}% (or 0 for OFF)"
+            ))
+            continue
+        if n > max_val:
+            warn(t(f"Maximum: {max_val}", f"Maximum: {max_val}"))
+            continue
+        return n
 
 
 def get_reefbeat_wifi(ip: str) -> Optional[Dict]:
@@ -421,6 +605,16 @@ def run_wizard(install_dir: str):
     cfg: Dict[str, Any] = {}
 
     # =================================================================
+    # Step 0: rfkill — make sure radios are not blocked
+    # =================================================================
+    # Wi-Fi is always required (we scan + connect to ReefBeat devices).
+    # Bluetooth is only required if the user later picks Victron monitoring,
+    # but unblocking it preventively costs nothing and avoids a re-run.
+    section(t("0. Vérification des radios (rfkill)",
+              "0. Radio check (rfkill)"))
+    ensure_radios_unblocked(check_bluetooth=True)
+
+    # =================================================================
     # Step 1: Scan ReefBeat devices
     # =================================================================
     section(t("1. Détection des équipements ReefBeat",
@@ -473,16 +667,78 @@ def run_wizard(install_dir: str):
          f"{len(selected)} device(s) selected"))
 
     # =================================================================
+    # Step 1b: Expand multi-pump devices (RSRUN) into individual entries
+    # =================================================================
+    # An RSRUN exposes /dashboard with pump_1 / pump_2 sub-objects, each with
+    # its own name / type / model. We unfold these so the rest of the wizard
+    # treats each physical pump as a distinct controllable item.
+    # Single-pump devices (RSWAVE, RSLED) stay as-is.
+    expanded: List[Dict] = []
+    for d in selected:
+        hw = d["hw_model"]
+        if hw.startswith("RSRUN"):
+            dash = get_reefbeat_dashboard(d["ip"])
+            pumps_found = []
+            if dash:
+                for key in ("pump_1", "pump_2", "pump_3", "pump_4"):
+                    p = dash.get(key)
+                    if isinstance(p, dict) and not p.get("missing_pump", False):
+                        pumps_found.append((key, p))
+
+            if not pumps_found:
+                # Could not enumerate pumps -> fall back to a single entry
+                warn(t(
+                    f"{d['name']}: dashboard indisponible, traité comme pompe unique",
+                    f"{d['name']}: dashboard unavailable, treated as single pump"
+                ))
+                expanded.append({**d, "pump_index": None,
+                                 "pump_type": None, "pump_model": None,
+                                 "display_name": d["name"]})
+                continue
+
+            for key, p in pumps_found:
+                pump_name = p.get("name", f"{d['name']} {key}")
+                pump_type = p.get("type", "")
+                pump_model = p.get("model", "")
+                display = f"{d['name']} / {pump_name}"
+                if pump_type or pump_model:
+                    display += f" [{pump_type or pump_model}]"
+                expanded.append({
+                    **d,
+                    "pump_index": key,            # "pump_1" / "pump_2"
+                    "pump_type": pump_type,       # "return" / "skimmer" / ...
+                    "pump_model": pump_model,     # "return-12000" / "rsk-900"
+                    "pump_name": pump_name,
+                    "display_name": display,
+                })
+                ok(f"  {display} ({d['ip']})")
+        else:
+            # Single-pump devices (RSWAVE, RSLED): keep as-is
+            expanded.append({**d, "pump_index": None,
+                             "pump_type": None, "pump_model": None,
+                             "display_name": d["name"]})
+
+    selected = expanded
+    ok(t(f"→ {len(selected)} pompe(s) à piloter",
+         f"→ {len(selected)} pump(s) to control"))
+
+    # =================================================================
     # Step 2: Wi-Fi configuration
     # =================================================================
     section(t("2. Configuration Wi-Fi", "2. Wi-Fi configuration"))
 
     # Get SSID from ReefBeat devices
+    # Note: multi-pump devices (RSRUN) appear several times in `selected`
+    # but share a single IP — dedupe to avoid querying the same box twice.
     device_ssids = {}
     device_macs = {}
+    seen_ips: set = set()
 
     for d in selected:
         ip = d["ip"]
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
         wifi_info = get_reefbeat_wifi(ip)
         if wifi_info:
             ssid = wifi_info.get("ssid", "")
@@ -635,45 +891,138 @@ def run_wizard(install_dir: str):
     # =================================================================
     # Step 5: Monitoring
     # =================================================================
+    # INA226 is now the mandatory primary battery monitor (it sees the
+    # actual battery current at all times, including during outages).
+    # Victron BLE is an optional auxiliary that adds charger-side
+    # telemetry (state, output current/voltage) on top.
     section(t("5. Monitoring batterie", "5. Battery monitoring"))
 
-    info(t("Choisissez le type de monitoring:", "Choose monitoring type:"))
-    mon_choices = [
-        ("ina226", t("INA226 (module I2C)", "INA226 (I2C module)")),
-        ("victron", t("Victron Blue Smart IP22 (BLE)", "Victron Blue Smart IP22 (BLE)")),
-        ("none", t("Aucun monitoring", "No monitoring")),
-    ]
-
-    for i, (key, label) in enumerate(mon_choices, 1):
-        print(f"    {C.BOLD}{i}.{C.END} {label}")
+    info(t(
+        "INA226 (shunt I2C) est le monitoring principal et obligatoire.",
+        "INA226 (I2C shunt) is the mandatory primary battery monitor."
+    ))
+    info(t(
+        "Il mesure le courant batterie réel en permanence, même secteur coupé.",
+        "It measures the real battery current at all times, even on outage."
+    ))
     print()
 
-    default_backend = defaults.get("monitoring", {}).get("backend", "ina226")
-    default_idx = next(
-        (i for i, (k, _) in enumerate(mon_choices, 1) if k == default_backend), 1
-    )
-    mon_idx = ask_int(
-        t("Votre choix", "Your choice"),
-        default=default_idx, min_val=1, max_val=3
-    )
-    mon_backend = mon_choices[mon_idx - 1][0]
+    # --- I2C sanity check ---
+    # The INA226 module is mandatory, so we surface a clear warning if the
+    # bus isn't available. We don't block the wizard on this -- the user
+    # might be configuring this on a different machine -- but they should
+    # know early.
+    if not os.path.exists("/dev/i2c-1"):
+        warn(t(
+            "/dev/i2c-1 absent : le bus I2C ne semble pas activé sur ce Pi.",
+            "/dev/i2c-1 missing: the I2C bus does not appear to be enabled."
+        ))
+        info(t(
+            "Activez-le avec : sudo raspi-config nonint do_i2c 0",
+            "Enable it with: sudo raspi-config nonint do_i2c 0"
+        ))
+        info(t("puis redémarrez le Pi avant de lancer le service.",
+               "then reboot the Pi before starting the service."))
+    else:
+        # Try a quick i2cdetect to spot the INA226. Non-fatal.
+        try:
+            out = subprocess.run(
+                ["i2cdetect", "-y", "1"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if out.returncode == 0:
+                # Look for any of the four common INA226 addresses.
+                hits = [a for a in ("40", "41", "44", "45")
+                        if f" {a} " in out.stdout]
+                if hits:
+                    ok(t(
+                        f"Composant I2C détecté à 0x{hits[0]} (probable INA226).",
+                        f"I2C device detected at 0x{hits[0]} (probably the INA226)."
+                    ))
+                else:
+                    warn(t(
+                        "Aucun composant détecté à 0x40/0x41/0x44/0x45.",
+                        "No device detected at 0x40/0x41/0x44/0x45."
+                    ))
+                    info(t("Vérifiez le câblage SDA/SCL/3V3/GND.",
+                           "Check the SDA/SCL/3V3/GND wiring."))
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # i2cdetect is part of i2c-tools; install.sh installs it but
+            # the user may have skipped it. Don't make this fatal.
+            pass
+    print()
 
-    cfg["monitoring"] = {"backend": mon_backend}
-
-    if mon_backend == "ina226":
-        default_addr = (defaults.get("monitoring", {})
-                        .get("ina226", {}).get("address", "0x40"))
-        addr = ask(
-            t("Adresse I2C de l'INA226", "INA226 I2C address"),
-            default=default_addr
+    default_addr = (defaults.get("monitoring", {})
+                    .get("ina226", {}).get("address", "0x40"))
+    default_shunt = (defaults.get("monitoring", {})
+                     .get("ina226", {}).get("shunt_resistor", 0.002))
+    addr = ask(
+        t("Adresse I2C de l'INA226", "INA226 I2C address"),
+        default=default_addr
+    )
+    # Shunt resistor value: ALWAYS required (used to compute current from
+    # the shunt voltage drop). Common values for ready-made INA226 modules:
+    #   - 0.002 Ω: most "20A / 36V" modules (Amazon/Aliexpress generic)
+    #   - 0.01  Ω: some "100A" modules (less common)
+    #   - 0.1   Ω: low-current breakouts (Adafruit, ~1A max)
+    # The user must confirm the value printed on their module's shunt
+    # resistor (look for R002, R010, R100 markings).
+    info(t(
+        "Valeurs typiques : 0.002 Ω pour les modules 20A (génériques),",
+        "Typical values: 0.002 Ω for 20A modules (generic),"
+    ))
+    info(t(
+        "                  0.01 Ω pour les modules 100A,",
+        "                 0.01 Ω for 100A modules,"
+    ))
+    info(t(
+        "                  0.1 Ω pour les modules basse intensité (~1A).",
+        "                 0.1 Ω for low-current breakouts (~1A)."
+    ))
+    while True:
+        raw = ask(
+            t("Valeur du shunt (Ohms)", "Shunt resistor value (Ohms)"),
+            default=str(default_shunt)
         )
-        cfg["monitoring"]["ina226"] = {
+        try:
+            shunt = float(raw)
+        except ValueError:
+            warn(t("Valeur invalide", "Invalid value"))
+            continue
+        if shunt <= 0 or shunt > 1.0:
+            warn(t("Doit être entre 0 et 1 Ohm",
+                   "Must be between 0 and 1 Ohm"))
+            continue
+        break
+    cfg["monitoring"] = {
+        "ina226": {
             "i2c_bus": 1,
             "address": addr,
-            "shunt_resistor": 0.01,
-        }
+            "shunt_resistor": shunt,
+        },
+    }
+    # Backwards-compatible flag for components that still inspect it.
+    # New code should look at the presence of the "ina226" / "victron"
+    # subkeys directly.
+    cfg["monitoring"]["backend"] = "ina226"
 
-    elif mon_backend == "victron":
+    # --- Optional Victron auxiliary ---
+    print()
+    info(t(
+        "Optionnel : ajouter un chargeur Victron Blue Smart (BLE) pour publier",
+        "Optional: add a Victron Blue Smart charger (BLE) to publish"
+    ))
+    info(t(
+        "son état (mode bulk/absorption/storage, courant de sortie) dans HA.",
+        "its state (bulk/absorption/storage mode, output current) to HA."
+    ))
+    add_victron = ask_yes_no(
+        t("Ajouter un chargeur Victron en complément ?",
+          "Add a Victron charger as a complement?"),
+        default=bool(defaults.get("monitoring", {}).get("victron")),
+    )
+
+    if add_victron:
         info(t("Scan des appareils Victron en Bluetooth...",
                "Scanning for Victron Bluetooth devices..."))
 
@@ -742,8 +1091,9 @@ def run_wizard(install_dir: str):
         cfg["monitoring"]["victron"] = {
             "ble_address": ble_address,
             "encryption_key": enc_key,
-            "poll_interval_s": 5.0,
         }
+    # If the user declines, we simply omit the "victron" subkey -- the
+    # factory in monitor.py won't instantiate the auxiliary backend.
 
     # =================================================================
     # Step 6: Pump intensity levels
@@ -751,111 +1101,190 @@ def run_wizard(install_dir: str):
     section(t("6. Niveaux d'intensité des pompes",
               "6. Pump intensity levels"))
 
-    # Build controller list
+    # Build a unique key per controllable pump. For multi-pump devices
+    # (RSRUN) the parent `name` is the same for both pumps, so we suffix
+    # with the pump_index ("pump_1"/"pump_2"). For single-pump devices
+    # we keep the device name as-is.
+    def pump_key(d: Dict) -> str:
+        if d.get("pump_index"):
+            return f"{d['name']}::{d['pump_index']}"
+        return d["name"]
+
+    # Build controller list (one entry per controllable pump)
     controllers = []
     for d in selected:
         ctrl = {
+            "key": pump_key(d),
             "name": d["name"],
             "ip": d["ip"],
-            "type": d["hw_model"].lower().replace("rs", "reef").replace("wave", "wave"),
+            "hw_model": d["hw_model"],
+            "type": d["hw_model"].lower().replace("rs", "reef"),
         }
+        # Multi-pump RSRUN: include pump-specific addressing
+        if d.get("pump_index"):
+            ctrl["pump_index"] = d["pump_index"]      # "pump_1" / "pump_2"
+            ctrl["pump_type"] = d.get("pump_type")    # "return" / "skimmer"
+            ctrl["pump_model"] = d.get("pump_model")  # "return-12000" / "rsk-900"
+            ctrl["pump_name"] = d.get("pump_name")
         controllers.append(ctrl)
 
     cfg["pump_control"] = {"controllers": controllers}
 
-    if mon_backend == "none":
-        # No monitoring: just ask for a single backup speed
-        info(t(
-            "Sans monitoring batterie, une seule vitesse de secours sera appliquée.",
-            "Without battery monitoring, a single backup speed will be applied."
-        ))
-        global_speed = ask_int(
-            t("Vitesse des pompes en cas de coupure (%)",
-              "Pump speed on power outage (%)"),
-            default=50, min_val=0, max_val=100
+    # Compute the global lower bound: the global intensity of any level
+    # must be valid for every selected pump. So the floor is the highest
+    # min_running among all present models. 0 (=OFF) is always allowed.
+    present_models = {d["hw_model"] for d in selected}
+    global_min_running = max(
+        (get_intensity_range(m)[0] for m in present_models), default=0
+    )
+    global_max = min(
+        (get_intensity_range(m)[1] for m in present_models), default=100
+    )
+
+    def ask_global_intensity(prompt: str, default: int) -> int:
+        """
+        Ask for a level-wide intensity. Must be either 0 (OFF) or within
+        [global_min_running, global_max]. Per-device overrides can later
+        loosen this for individual pumps.
+        """
+        if global_min_running > 0:
+            hint = t(
+                f"0 = tout OFF, sinon {global_min_running}–{global_max}",
+                f"0 = all OFF, otherwise {global_min_running}–{global_max}"
+            )
+        else:
+            hint = f"0–{global_max}"
+        full = f"{prompt} ({hint})"
+        while True:
+            val = ask(full, default)
+            try:
+                n = int(val)
+            except ValueError:
+                warn(t("Entrez un nombre entier", "Enter an integer"))
+                continue
+            if n == 0:
+                return 0
+            if n < global_min_running:
+                warn(t(
+                    f"Trop bas pour les modèles présents (min commun: {global_min_running}%, "
+                    "ou 0 pour OFF). Utilisez les valeurs par équipement pour aller plus bas.",
+                    f"Too low for the present models (common min: {global_min_running}%, "
+                    "or 0 for OFF). Use per-device values to go lower."
+                ))
+                continue
+            if n > global_max:
+                warn(f"Maximum: {global_max}")
+                continue
+            return n
+
+    # INA226 is always present, so we always offer the progressive levels
+    # path. Users can still pick a single SoC threshold by skipping the
+    # progressive levels prompt below.
+    use_levels = ask_yes_no(
+        t("Voulez-vous définir des niveaux d'intensité progressifs ?",
+          "Do you want to define progressive intensity levels?")
+    )
+
+    if not use_levels:
+        speed = ask_global_intensity(
+            t("Vitesse des pompes sur batterie (%)", "Pump speed on battery (%)"),
+            default=max(50, global_min_running)
         )
         cfg["pump_control"]["levels"] = {
             "normal": {"soc_threshold": 100, "global_intensity": 100, "per_device": {}},
-            "eco": {"soc_threshold": 99, "global_intensity": global_speed, "per_device": {}},
+            "eco": {"soc_threshold": 99, "global_intensity": speed, "per_device": {}},
         }
 
     else:
-        use_levels = ask_yes_no(
-            t("Voulez-vous définir des niveaux d'intensité progressifs ?",
-              "Do you want to define progressive intensity levels?")
+        num_levels = ask_int(
+            t("Combien de niveaux ?", "How many levels?"),
+            default=2, min_val=1, max_val=5
         )
 
-        if not use_levels:
-            speed = ask_int(
-                t("Vitesse des pompes sur batterie (%)", "Pump speed on battery (%)"),
-                default=50, min_val=0, max_val=100
+        levels = {
+            "normal": {
+                "soc_threshold": 100,
+                "global_intensity": 100,
+                "per_device": {},
+            }
+        }
+
+        level_names = ["eco", "survival", "critical", "emergency", "last_resort"]
+
+        # Show the user the per-model bounds upfront so they understand
+        # why some answers will be rejected.
+        info(t("Bornes par modèle (0 = OFF):", "Per-model bounds (0 = OFF):"))
+        for m in sorted(present_models):
+            lo, hi = get_intensity_range(m)
+            friendly = BACKUP_DEVICE_TYPES.get(m, m)
+            if lo > 0:
+                print(f"    {friendly}: 0 (OFF) ou {lo}%–{hi}%")
+            else:
+                print(f"    {friendly}: {lo}%–{hi}%")
+        print()
+
+        for i in range(num_levels):
+            lname = level_names[i] if i < len(level_names) else f"level_{i+1}"
+            print()
+            info(t(f"── Niveau {i+1}: {lname} ──",
+                   f"── Level {i+1}: {lname} ──"))
+
+            default_thresh = [60, 30, 15, 10, 5]
+            threshold = ask_int(
+                t("Seuil SoC en dessous duquel ce niveau s'active (%)",
+                  "SoC threshold below which this level activates (%)"),
+                default=default_thresh[i] if i < len(default_thresh) else 10,
+                min_val=1, max_val=99
             )
-            cfg["pump_control"]["levels"] = {
-                "normal": {"soc_threshold": 100, "global_intensity": 100, "per_device": {}},
-                "eco": {"soc_threshold": 99, "global_intensity": speed, "per_device": {}},
+
+            default_speeds = [50, 30, 20, 10, 5]
+            # Clamp the default into the globally valid range
+            raw_default = default_speeds[i] if i < len(default_speeds) else 30
+            clamped_default = (
+                raw_default if raw_default == 0 or raw_default >= global_min_running
+                else global_min_running
+            )
+            global_speed = ask_global_intensity(
+                t("Vitesse globale pour ce niveau (%)",
+                  "Global speed for this level (%)"),
+                default=clamped_default
+            )
+
+            per_device = {}
+            if len(selected) > 1:
+                custom = ask_yes_no(
+                    t("Définir des vitesses individuelles pour certains équipements ?",
+                      "Set individual speeds for specific devices?"),
+                    default=False
+                )
+                if custom:
+                    for d in selected:
+                        key = pump_key(d)
+                        label = d.get("display_name", d["name"])
+                        # Per-device default: use the global level speed,
+                        # but bump it to the device's own min if needed.
+                        dmin, dmax = get_intensity_range(d["hw_model"])
+                        if global_speed == 0:
+                            dev_default = 0
+                        elif global_speed < dmin:
+                            dev_default = dmin
+                        else:
+                            dev_default = min(global_speed, dmax)
+                        speed = ask_pump_intensity(
+                            f"  {label}",
+                            d["hw_model"],
+                            default=dev_default,
+                        )
+                        if speed != global_speed:
+                            per_device[key] = speed
+
+            levels[lname] = {
+                "soc_threshold": threshold,
+                "global_intensity": global_speed,
+                "per_device": per_device,
             }
 
-        else:
-            num_levels = ask_int(
-                t("Combien de niveaux ?", "How many levels?"),
-                default=2, min_val=1, max_val=5
-            )
-
-            levels = {
-                "normal": {
-                    "soc_threshold": 100,
-                    "global_intensity": 100,
-                    "per_device": {},
-                }
-            }
-
-            level_names = ["eco", "survival", "critical", "emergency", "last_resort"]
-
-            for i in range(num_levels):
-                lname = level_names[i] if i < len(level_names) else f"level_{i+1}"
-                print()
-                info(t(f"── Niveau {i+1}: {lname} ──",
-                       f"── Level {i+1}: {lname} ──"))
-
-                default_thresh = [60, 30, 15, 10, 5]
-                threshold = ask_int(
-                    t("Seuil SoC en dessous duquel ce niveau s'active (%)",
-                      "SoC threshold below which this level activates (%)"),
-                    default=default_thresh[i] if i < len(default_thresh) else 10,
-                    min_val=1, max_val=99
-                )
-
-                default_speeds = [50, 30, 20, 10, 5]
-                global_speed = ask_int(
-                    t("Vitesse globale pour ce niveau (%)",
-                      "Global speed for this level (%)"),
-                    default=default_speeds[i] if i < len(default_speeds) else 30,
-                    min_val=0, max_val=100
-                )
-
-                per_device = {}
-                if len(selected) > 1:
-                    custom = ask_yes_no(
-                        t("Définir des vitesses individuelles pour certains équipements ?",
-                          "Set individual speeds for specific devices?"),
-                        default=False
-                    )
-                    if custom:
-                        for d in selected:
-                            speed = ask_int(
-                                f"  {d['friendly']} ({d['name']})",
-                                default=global_speed, min_val=0, max_val=100
-                            )
-                            if speed != global_speed:
-                                per_device[d["name"]] = speed
-
-                levels[lname] = {
-                    "soc_threshold": threshold,
-                    "global_intensity": global_speed,
-                    "per_device": per_device,
-                }
-
-            cfg["pump_control"]["levels"] = levels
+        cfg["pump_control"]["levels"] = levels
 
     # =================================================================
     # Step 7: MQTT / Home Assistant
@@ -879,18 +1308,33 @@ def run_wizard(install_dir: str):
                         default=default_host)
         mqtt_port = ask_int(t("Port MQTT", "MQTT port"),
                             default=default_port, min_val=1, max_val=65535)
-        mqtt_user = ask(t("Utilisateur MQTT (vide si aucun)", "MQTT user (empty if none)"),
-                        default=defaults.get("mqtt", {}).get("user", ""))
-        mqtt_password = ""
-        if mqtt_user:
+
+        # User/password are mandatory when MQTT is enabled. We loop until
+        # both fields are non-empty so the wizard can't produce a config
+        # that will silently fail authentication at runtime.
+        default_user = defaults.get("mqtt", {}).get("user", "") or ""
+        while True:
+            mqtt_user = ask(t("Utilisateur MQTT", "MQTT user"),
+                            default=default_user if default_user else None)
+            if mqtt_user.strip():
+                break
+            warn(t("L'utilisateur MQTT est obligatoire.",
+                   "MQTT user is required."))
+
+        default_pw = defaults.get("mqtt", {}).get("password", "") or ""
+        while True:
             mqtt_password = ask(t("Mot de passe MQTT", "MQTT password"),
-                                default=defaults.get("mqtt", {}).get("password", ""))
+                                default=default_pw if default_pw else None)
+            if mqtt_password.strip():
+                break
+            warn(t("Le mot de passe MQTT est obligatoire.",
+                   "MQTT password is required."))
 
         cfg["mqtt"] = {
             "host": mqtt_host,
             "port": mqtt_port,
-            "user": mqtt_user if mqtt_user else None,
-            "password": mqtt_password if mqtt_password else None,
+            "user": mqtt_user,
+            "password": mqtt_password,
             "base_topic": ask(t("Topic de base", "Base topic"),
                               default=default_topic),
             "device_name": ask(t("Nom du device HA", "HA device name"),
