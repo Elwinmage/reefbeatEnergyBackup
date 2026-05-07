@@ -598,6 +598,18 @@ def save_config(cfg: Dict, install_dir: str):
          f"Configuration saved: {config_path}"))
 
 
+def pump_key(d: Dict) -> str:
+    """Stable per-pump identifier used as the key in PumpController.
+
+    For RSWAVE (one pump per device), use the device name. For RSRUN
+    (two pumps per device), append the pump index so each pump gets a
+    distinct entry in the level mapping.
+    """
+    if d.get("pump_index"):
+        return f"{d['name']}::{d['pump_index']}"
+    return d["name"]
+
+
 def run_wizard(install_dir: str):
     """Run the interactive configuration wizard."""
     banner("reefbeat⚡Backup — Configuration")
@@ -1105,11 +1117,6 @@ def run_wizard(install_dir: str):
     # (RSRUN) the parent `name` is the same for both pumps, so we suffix
     # with the pump_index ("pump_1"/"pump_2"). For single-pump devices
     # we keep the device name as-is.
-    def pump_key(d: Dict) -> str:
-        if d.get("pump_index"):
-            return f"{d['name']}::{d['pump_index']}"
-        return d["name"]
-
     # Build controller list (one entry per controllable pump)
     controllers = []
     for d in selected:
@@ -1177,17 +1184,39 @@ def run_wizard(install_dir: str):
                 continue
             return n
 
-    # INA226 is always present, so we always offer the progressive levels
-    # path. Users can still pick a single SoC threshold by skipping the
-    # progressive levels prompt below.
-    use_levels = ask_yes_no(
-        t("Voulez-vous définir des niveaux d'intensité progressifs ?",
-          "Do you want to define progressive intensity levels?")
+    # =================================================================
+    # Backup mode: auto (target-driven) / single speed
+    # =================================================================
+    # The auto path uses power_estimation to compute SoC thresholds and
+    # per-device intensities from a stated autonomy target. For users
+    # who want a single backup speed regardless of SoC, "simple" gives
+    # exactly one degraded level.
+    print()
+    info(t("Deux façons de configurer le mode batterie :",
+           "Two ways to configure backup behaviour:"))
+    mode_choices = [
+        ("auto", t("Auto : je donne une cible d'autonomie, le wizard calcule",
+                   "Auto: I state a target autonomy, the wizard computes")),
+        ("simple", t("Simple : une seule vitesse de secours",
+                     "Simple: a single backup speed")),
+    ]
+    for i, (k, label) in enumerate(mode_choices, 1):
+        print(f"    {C.BOLD}{i}.{C.END} {label}")
+    print()
+    mode_idx = ask_int(
+        t("Votre choix", "Your choice"),
+        default=1, min_val=1, max_val=2
     )
+    backup_mode = mode_choices[mode_idx - 1][0]
 
-    if not use_levels:
+    if backup_mode == "auto":
+        cfg["pump_control"]["levels"] = _build_auto_scenario(
+            cfg, selected, defaults
+        )
+    else:
         speed = ask_global_intensity(
-            t("Vitesse des pompes sur batterie (%)", "Pump speed on battery (%)"),
+            t("Vitesse des pompes sur batterie (%)",
+              "Pump speed on battery (%)"),
             default=max(50, global_min_running)
         )
         cfg["pump_control"]["levels"] = {
@@ -1195,96 +1224,165 @@ def run_wizard(install_dir: str):
             "eco": {"soc_threshold": 99, "global_intensity": speed, "per_device": {}},
         }
 
+
+def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
+    """
+    Interactive auto-scenario path.
+
+    Asks for the autonomy target and any auxiliary loads, then uses the
+    power_estimation module to produce a level set sized for the user's
+    actual hardware and battery.
+    """
+    from power_estimation import (
+        DeviceSpec, build_scenario, format_scenario,
+        detect_raspberry_pi,
+    )
+
+    # Battery capacity (already in cfg from step 4)
+    capacity_ah = cfg.get("battery", {}).get("capacity_ah", 60.0)
+    # 24V LiFePO4 nominal, depth of discharge 80% (standard safe value).
+    # Anything more aggressive risks shortening the cycle life.
+    nominal_v = 25.6
+    dod = 0.8
+    capacity_wh = capacity_ah * nominal_v * dod
+
+    info(t(
+        f"Capacité utile estimée : {capacity_wh:.0f} Wh "
+        f"(={capacity_ah:.0f} Ah × 25.6 V × 80% DoD)",
+        f"Estimated usable capacity: {capacity_wh:.0f} Wh "
+        f"(={capacity_ah:.0f} Ah × 25.6 V × 80% DoD)"
+    ))
+    print()
+
+    # Auxiliary load: try to auto-detect the Pi, then ask for any extras.
+    pi_label, pi_w = detect_raspberry_pi()
+    if pi_label and pi_w > 0:
+        ok(t(f"Raspberry Pi détecté : {pi_label} (~{pi_w:.1f} W)",
+             f"Raspberry Pi detected: {pi_label} (~{pi_w:.1f} W)"))
+    elif pi_label:
+        warn(t(f"Pi détecté ({pi_label}) mais conso inconnue.",
+               f"Pi detected ({pi_label}) but power unknown."))
+        pi_w = 4.0
     else:
-        num_levels = ask_int(
-            t("Combien de niveaux ?", "How many levels?"),
-            default=2, min_val=1, max_val=5
+        pi_w = 4.0  # generic fallback
+        info(t("Pi non détecté, estimation 4 W par défaut.",
+               "Pi not detected, defaulting to 4 W."))
+
+    add_extra = ask_yes_no(
+        t("Avez-vous d'autres équipements alimentés sur la batterie "
+          "(éclairage de secours, capteurs, switchs réseau...) ?",
+          "Do you have other equipment powered by the battery "
+          "(emergency lighting, sensors, network switches...)?"),
+        default=False,
+    )
+    extra_w = 0.0
+    if add_extra:
+        while True:
+            raw = ask(
+                t("Conso totale supplémentaire en watts (somme)",
+                  "Total extra power draw in watts (sum)"),
+                default="10",
+            )
+            try:
+                extra_w = float(raw)
+                if extra_w >= 0:
+                    break
+            except ValueError:
+                pass
+            warn(t("Valeur invalide", "Invalid value"))
+
+    aux_load_w = pi_w + extra_w
+
+    # Target autonomy
+    while True:
+        raw = ask(
+            t("Cible d'autonomie en heures",
+              "Target autonomy in hours"),
+            default="12",
         )
+        try:
+            target_h = float(raw)
+            if 1.0 <= target_h <= 72.0:
+                break
+        except ValueError:
+            pass
+        warn(t("Valeur invalide (1 à 72)", "Invalid value (1 to 72)"))
 
-        levels = {
-            "normal": {
-                "soc_threshold": 100,
-                "global_intensity": 100,
-                "per_device": {},
-            }
+    # Build DeviceSpec list from the selected equipment
+    devices = []
+    for d in selected:
+        hw = d["hw_model"]
+        if hw.startswith("RSWAVE"):
+            family, role, floor = "wave", "wave", 10
+            # ReefWave model name from BACKUP_DEVICE_TYPES
+            pump_model = BACKUP_DEVICE_TYPES.get(hw, "ReefWave 45")
+        elif hw.startswith("RSRUN"):
+            family, floor = "run", 40
+            role = d.get("pump_type") or "return"
+            pump_model = d.get("pump_model") or "return-12000"
+        else:
+            continue
+        devices.append(DeviceSpec(
+            key=pump_key(d),
+            family=family,
+            role=role,
+            pump_model=pump_model,
+            floor_pct=floor,
+        ))
+
+    levels = build_scenario(
+        target_h=target_h,
+        capacity_wh=capacity_wh,
+        devices=devices,
+        aux_load_w=aux_load_w,
+    )
+
+    # Show the proposed plan and ask for confirmation
+    print()
+    print(format_scenario(levels, target_h=target_h, capacity_wh=capacity_wh))
+    print()
+
+    if not ask_yes_no(
+        t("Accepter ce plan ?", "Accept this plan?"),
+        default=True,
+    ):
+        info(t(
+            "Plan rejeté -- relancez le wizard pour ajuster ou choisir "
+            "le mode manuel.",
+            "Plan rejected -- re-run the wizard to adjust or pick "
+            "manual mode."
+        ))
+        sys.exit(0)
+
+    # Convert ScenarioLevel objects into the format expected by
+    # PumpController. We compute global_intensity as the most common
+    # value among per-device entries (defaults to 100 for "normal").
+    out: dict = {}
+    for lvl in levels:
+        # Prefer the wave intensity as the global default; per_device
+        # overrides cover everything else.
+        wave_intensities = [
+            v for k, v in lvl.per_device.items()
+            if any(d.key == k and d.role == "wave" for d in devices)
+        ]
+        if lvl.name == "normal":
+            global_int = 100
+        elif wave_intensities:
+            global_int = wave_intensities[0]
+        else:
+            global_int = max(lvl.per_device.values()) if lvl.per_device else 0
+
+        # Per-device only keeps overrides that differ from the global
+        per_device = {
+            k: v for k, v in lvl.per_device.items() if v != global_int
         }
+        out[lvl.name] = {
+            "soc_threshold": lvl.soc_threshold,
+            "global_intensity": global_int,
+            "per_device": per_device,
+        }
+    return out
 
-        level_names = ["eco", "survival", "critical", "emergency", "last_resort"]
-
-        # Show the user the per-model bounds upfront so they understand
-        # why some answers will be rejected.
-        info(t("Bornes par modèle (0 = OFF):", "Per-model bounds (0 = OFF):"))
-        for m in sorted(present_models):
-            lo, hi = get_intensity_range(m)
-            friendly = BACKUP_DEVICE_TYPES.get(m, m)
-            if lo > 0:
-                print(f"    {friendly}: 0 (OFF) ou {lo}%–{hi}%")
-            else:
-                print(f"    {friendly}: {lo}%–{hi}%")
-        print()
-
-        for i in range(num_levels):
-            lname = level_names[i] if i < len(level_names) else f"level_{i+1}"
-            print()
-            info(t(f"── Niveau {i+1}: {lname} ──",
-                   f"── Level {i+1}: {lname} ──"))
-
-            default_thresh = [60, 30, 15, 10, 5]
-            threshold = ask_int(
-                t("Seuil SoC en dessous duquel ce niveau s'active (%)",
-                  "SoC threshold below which this level activates (%)"),
-                default=default_thresh[i] if i < len(default_thresh) else 10,
-                min_val=1, max_val=99
-            )
-
-            default_speeds = [50, 30, 20, 10, 5]
-            # Clamp the default into the globally valid range
-            raw_default = default_speeds[i] if i < len(default_speeds) else 30
-            clamped_default = (
-                raw_default if raw_default == 0 or raw_default >= global_min_running
-                else global_min_running
-            )
-            global_speed = ask_global_intensity(
-                t("Vitesse globale pour ce niveau (%)",
-                  "Global speed for this level (%)"),
-                default=clamped_default
-            )
-
-            per_device = {}
-            if len(selected) > 1:
-                custom = ask_yes_no(
-                    t("Définir des vitesses individuelles pour certains équipements ?",
-                      "Set individual speeds for specific devices?"),
-                    default=False
-                )
-                if custom:
-                    for d in selected:
-                        key = pump_key(d)
-                        label = d.get("display_name", d["name"])
-                        # Per-device default: use the global level speed,
-                        # but bump it to the device's own min if needed.
-                        dmin, dmax = get_intensity_range(d["hw_model"])
-                        if global_speed == 0:
-                            dev_default = 0
-                        elif global_speed < dmin:
-                            dev_default = dmin
-                        else:
-                            dev_default = min(global_speed, dmax)
-                        speed = ask_pump_intensity(
-                            f"  {label}",
-                            d["hw_model"],
-                            default=dev_default,
-                        )
-                        if speed != global_speed:
-                            per_device[key] = speed
-
-            levels[lname] = {
-                "soc_threshold": threshold,
-                "global_intensity": global_speed,
-                "per_device": per_device,
-            }
-
-        cfg["pump_control"]["levels"] = levels
 
     # =================================================================
     # Step 7: MQTT / Home Assistant

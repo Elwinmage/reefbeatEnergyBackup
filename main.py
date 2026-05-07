@@ -23,33 +23,79 @@ from monitor import create_monitor_backend
 from outage import create_outage_detector, PowerState
 from hotspot import NetworkManager
 from controller import PumpController, OutageManager
+from mqtt_buffer import MqttBuffer
 
 
 # =============================================================================
 # MQTT setup
 # =============================================================================
 
-def setup_mqtt(cfg: dict) -> Optional[mqtt.Client]:
-    """Connect to MQTT broker. Returns None on failure."""
+def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
+    """Configure the MQTT client with a non-blocking connection.
+
+    During a power outage the broker (and HA) typically die a few
+    minutes after we've lost the mains, but our service keeps running.
+    We must therefore tolerate:
+      - broker down at startup     -> use connect_async so we don't block
+      - broker dropping mid-run    -> rely on paho's reconnect_delay_set
+      - broker coming back later   -> wake the buffer to replay pending msgs
+
+    The buffer is wired into on_connect / on_disconnect callbacks so the
+    replay thread reacts immediately to state changes instead of polling.
+    """
     mqtt_cfg = cfg.get("mqtt", {})
+    host = mqtt_cfg.get("host", "localhost")
+    port = mqtt_cfg.get("port", 1883)
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    user = mqtt_cfg.get("user")
+    if user:
+        client.username_pw_set(user, mqtt_cfg.get("password"))
+
+    # Reconnect logic: paho will retry between min and max seconds with
+    # exponential backoff. We pick a fairly aggressive 1->60s curve so
+    # we re-establish quickly when the broker (or its host) comes back.
+    client.reconnect_delay_set(min_delay=1, max_delay=60)
+
+    def _on_connect(c, userdata, flags, rc, props=None):
+        if rc == 0:
+            print(f"[MQTT] Connected to {host}:{port}")
+            buffer.notify_connected()
+        else:
+            print(f"[MQTT] Connection refused (rc={rc})")
+
+    def _on_disconnect(c, userdata, *args, **kwargs):
+        # paho calls this on graceful disconnect AND on broker drop.
+        # We log it so the user can correlate with the journal.
+        print(f"[MQTT] Disconnected -- buffering until reconnection")
+
+    client.on_connect = _on_connect
+    client.on_disconnect = _on_disconnect
+
+    # connect_async: returns immediately even if the broker is down.
+    # The actual connection attempt happens inside loop_start()'s thread
+    # and is automatically retried until success.
     try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        user = mqtt_cfg.get("user")
-        if user:
-            client.username_pw_set(user, mqtt_cfg.get("password"))
-        host = mqtt_cfg.get("host", "localhost")
-        port = mqtt_cfg.get("port", 1883)
-        client.connect(host, port, keepalive=60)
+        client.connect_async(host, port, keepalive=60)
         client.loop_start()
-        print(f"[MQTT] Connected to {host}:{port}")
-        return client
-    except Exception as e:
-        print(f"[MQTT] Connection failed ({e}), continuing without")
+        print(f"[MQTT] Trying {host}:{port} (non-blocking)...")
+    except Exception as e:  # noqa: BLE001
+        # connect_async should not raise for normal network issues; if
+        # it does (e.g. invalid hostname), there's no point retrying.
+        print(f"[MQTT] Setup failed ({e}), continuing without MQTT")
         return None
 
+    return client
 
-def publish_ha_discovery(client: mqtt.Client, cfg: dict, has_victron: bool = False):
+
+def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
+                         has_victron: bool = False):
     """Publish MQTT auto-discovery for Home Assistant.
+
+    Goes through the file-backed buffer so that if HA is down (e.g.
+    same outage that triggered the failover), the discovery configs
+    are replayed once the broker comes back. retain=True ensures HA
+    picks them up even if it joined after the publish.
 
     has_victron : when True, also publishes auxiliary charger sensors fed
                   by the Victron BLE auxiliary backend.
@@ -105,13 +151,15 @@ def publish_ha_discovery(client: mqtt.Client, cfg: dict, has_victron: bool = Fal
             payload["unit_of_measurement"] = unit
         if dc:
             payload["device_class"] = dc
-        client.publish(
+        buffer.publish(
             f"{base}/sensor/{uid_full}/config",
             json.dumps(payload), retain=True,
         )
-        time.sleep(0.1)
+        # Throttle slightly so we don't overwhelm the buffer's flush
+        # cadence on slow SD cards.
+        time.sleep(0.05)
 
-    print(f"[MQTT] Published {len(sensors)} HA discovery configs")
+    print(f"[MQTT] Queued {len(sensors)} HA discovery configs")
 
 
 # =============================================================================
@@ -177,10 +225,23 @@ def main():
     if victron_aux:
         print(f"[INFO] Auxiliary backend active: {victron_aux.name}")
 
-    # --- MQTT ---
-    mqtt_client = setup_mqtt(cfg)
+    # --- MQTT (with file-backed buffer for outage replay) ---
+    # The buffer survives broker outages by writing every message to
+    # disk first; the replay thread pushes them to the broker as soon
+    # as it's reachable. This means we never lose data points -- HA
+    # gets a continuous timeline even if it died for hours during the
+    # very outage we're trying to ride out.
+    buffer_dir = Path(cfg.get("mqtt", {}).get(
+        "buffer_dir", "/var/lib/reef-battery-monitor/mqtt"
+    ))
+    retention_days = cfg.get("mqtt", {}).get("buffer_retention_days", 7)
+    mqtt_buffer = MqttBuffer(buffer_dir, retention_days=retention_days)
+
+    mqtt_client = setup_mqtt(cfg, mqtt_buffer)
     if mqtt_client:
-        publish_ha_discovery(mqtt_client, cfg, has_victron=victron_aux is not None)
+        mqtt_buffer.attach_client(mqtt_client)
+        publish_ha_discovery(mqtt_buffer, cfg,
+                             has_victron=victron_aux is not None)
 
     # --- Network manager ---
     network = NetworkManager(cfg.get("network", {}))
@@ -306,10 +367,15 @@ def main():
                 data["charger_state"] = reading.charger_state
                 data["charger_error"] = reading.charger_error
 
-            # Publish MQTT
-            if mqtt_client and mqtt_client.is_connected():
+            # Publish to the buffer. This always succeeds locally: if
+            # the broker is up the message is forwarded immediately;
+            # if it's down, it's stored and replayed on reconnection.
+            # No "if mqtt_client.is_connected()" gate -- we WANT to
+            # capture the data points even (especially!) during an
+            # outage when HA is dead.
+            if mqtt_client is not None:
                 topic = f"{base_topic}/sensor/{device_name}/state"
-                mqtt_client.publish(topic, json.dumps(data))
+                mqtt_buffer.publish(topic, json.dumps(data))
 
             # Console
             pwr = "⚡" if status["power_state"] == "mains" else "🔋"
@@ -351,6 +417,9 @@ def main():
         monitor.close()
         if victron_aux:
             victron_aux.close()
+        # Stop the buffer FIRST so the replay thread doesn't try to
+        # publish through a client we're about to disconnect.
+        mqtt_buffer.stop()
         if mqtt_client:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
