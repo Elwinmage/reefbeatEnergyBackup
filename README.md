@@ -1,95 +1,98 @@
 # reefbeat⚡Backup
 
-Système autonome de monitoring et de gestion de batterie de secours pour aquarium récifal Red Sea (ReefWave, ReefRun, DC Skimmer, DC Pump).
-
-> Autonomous backup battery monitoring and management system for Red Sea reef aquariums.
-
-## ⚡ Fonctionnalités
-
-- **Monitoring batterie** via INA226 (I2C, principal) + Victron BLE (auxiliaire optionnel pour l'état du chargeur)
-- **Détection de coupure instantanée** via relais 230 V sur GPIO
-- **Dégradation progressive des pompes** — niveaux SoC calculés automatiquement à partir d'une cible d'autonomie
-- **Contrôle individuel** — chaque ReefWave / ReefRun / Skimmer reçoit sa propre intensité par niveau
-- **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome
-- **Intégration Home Assistant** — auto-discovery MQTT (10 capteurs + chargeur si Victron)
-- **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
-- **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
-- **Bilingue** — interface FR/EN selon la locale système
-
-## 📋 Sommaire
-
-- [Installation rapide](#-installation-rapide)
-- [Niveaux de montage matériel](#-niveaux-de-montage-matériel)
-  - [Niveau 1 — Montage de base](#niveau-1--montage-de-base)
-  - [Niveau 2 — Montage normal (recommandé)](#niveau-2--montage-normal-recommandé)
-  - [Niveau 3 — Montage avancé](#niveau-3--montage-avancé)
-  - [Augmentation d'autonomie](#augmentation-dautonomie)
-- [Configuration](#-configuration)
-- [Home Assistant](#-home-assistant)
-- [Blueprint test de batterie](#-blueprint-test-automatique-de-batterie)
-- [Structure du projet](#-structure-du-projet)
-- [Dépannage](#-dépannage)
+**🇬🇧 English** · [🇫🇷 Français](README.fr.md)
 
 ---
 
-## 🚀 Installation rapide
+Standalone backup-battery monitoring and management system for Red Sea reef aquariums (ReefWave, ReefRun, DC Skimmer, DC Pump).
+
+## ⚡ Features
+
+- **Battery monitoring** via INA226 (I2C, primary) + Victron BLE (optional auxiliary for charger state)
+- **Sub-second outage detection** via 230 V relay on GPIO
+- **Progressive pump dimming** — SoC levels computed automatically from a target autonomy
+- **Per-device control** — every ReefWave / ReefRun / Skimmer gets its own intensity per level
+- **3-tier network failover** — normal Wi-Fi → reconnect → standalone hotspot
+- **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
+- **MQTT buffer with replay** — measurements taken during an HA outage are never lost
+- **Auto-detection** — scans the network for ReefBeat devices during setup
+- **Bilingual wizard** — FR/EN based on the system locale
+
+## 📋 Table of contents
+
+- [Quick install](#-quick-install)
+- [Hardware build levels](#-hardware-build-levels)
+  - [Level 1 — Bare-bones build](#level-1--bare-bones-build)
+  - [Level 2 — Standard build (recommended)](#level-2--standard-build-recommended)
+  - [Level 3 — Advanced build](#level-3--advanced-build)
+  - [Increasing autonomy](#increasing-autonomy)
+- [Configuration](#-configuration)
+- [Home Assistant](#-home-assistant)
+- [Battery test blueprint](#-automatic-battery-test-blueprint)
+- [Project structure](#-project-structure)
+- [Troubleshooting](#-troubleshooting)
+
+---
+
+## 🚀 Quick install
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/main/install.sh | sudo bash
 ```
 
-L'installeur :
+The installer will:
 
-1. Télécharge la dernière version
-2. Active l'I2C du Pi si nécessaire (`raspi-config nonint do_i2c 0`)
-3. Installe `python3-rpi-lgpio` (compatible Pi 5 / kernel 6.6+) et les dépendances Python
-4. Lance le wizard interactif qui :
-   - Scanne le réseau pour trouver les équipements ReefBeat
-   - Récupère SSID Wi-Fi et adresses MAC depuis vos équipements
-   - Détecte automatiquement votre Raspberry Pi
-   - Calcule les niveaux SoC à partir d'une **cible d'autonomie** (12 h, 24 h…)
-   - Configure batterie, monitoring INA226 + Victron optionnel, MQTT
+1. Download the latest version
+2. Enable I2C on the Pi if needed (`raspi-config nonint do_i2c 0`)
+3. Install `python3-rpi-lgpio` (for Pi 5 / kernel 6.6+ compatibility) and Python dependencies
+4. Run an interactive wizard that:
+   - Scans the network for ReefBeat devices
+   - Reads Wi-Fi SSID and MAC addresses from your devices
+   - Auto-detects your Raspberry Pi model
+   - Builds SoC levels from a **target autonomy** (12 h, 24 h…)
+   - Configures battery, INA226 monitoring + optional Victron, MQTT
 
 ---
 
-## 🔧 Niveaux de montage matériel
+## 🔧 Hardware build levels
 
-Le système se construit en trois niveaux, chacun ajoutant des fonctionnalités. Vous pouvez démarrer au niveau 1 et monter progressivement.
+The system is built up in three levels, each adding capabilities. Start at level 1 and grow into level 3 over time if you like.
 
-### Niveau 1 — Montage de base
+### Level 1 — Bare-bones build
 
-> **Objectif** : assurer une alimentation des pompes sur batterie en cas de coupure secteur, sans monitoring ni automatisation.
+> **Goal**: keep the pumps powered from the battery during a mains outage. No monitoring, no automation.
 
-#### 📦 Matériel
+#### 📦 Bill of materials
 
-| Composant | Modèle suggéré | Prix indicatif |
+| Component | Suggested model | Indicative price |
 |---|---|---|
-| ![Batterie](docs/images/batterie.png) **Batterie LiFePO₄ 24 V 60 Ah** | [Kepworth 24V 60Ah](https://www.amazon.fr/dp/B0F3X3LB9K) | ~330 € |
-| ![Chargeur](docs/images/chargeur.png) **Chargeur Victron 24V/12A** (sans BLE) | [Victron Blue Power IP22 24/12](https://www.amazon.fr/dp/B0753LR869) | ~140 € |
-| ![Connecteur jack](docs/images/jack.png) **Connecteur jack adaptateur ReefWave** | Câble jack 5,5 × 2,1 mm vers fils nus | ~5 € |
-| ![Connecteur RSRun](docs/images/rsrun.png) **Connecteur étanche IP68 4 broches ReefRun/Skimmer** | [Connecteur IP68 4 pôles](https://fr.aliexpress.com/item/1005009386771716.html) | ~5 € |
-| Câblage (fil 2,5 mm² rouge/noir, cosses, gaine thermo, fusible 30 A) | — | ~20 € |
+| ![Battery](docs/images/batterie.png) **24 V 60 Ah LiFePO₄ battery** *(comes with a 24V/5A charger)* | [Kepworth 24V 60Ah](https://www.amazon.fr/dp/B0F3X3LB9K) | ~260 € |
+| ![Jack connector](docs/images/jack.png) **ReefWave jack adaptor cable** | 5.5 × 2.1 mm jack to bare wires | ~5 € |
+| ![RSRun connector](docs/images/rsrun.png) **IP68 4-pin connector for ReefRun/Skimmer** | [IP68 4-pole connector](https://fr.aliexpress.com/item/1005009386771716.html) | ~5 € |
+| Wiring (2.5 mm² red/black, lugs, heat-shrink, 15 A fuse) | — | ~20 € |
 
-**Budget niveau 1 : ~500 €**
+**Level 1 budget: ~290 €**
 
-#### 🔌 Schéma de montage
+> 🔊 **Noise warning**: the charger bundled with the Kepworth battery uses an active cooling fan that's quite loud. If you plan to install it in a cabinet near a living area, prefer a remote location (utility room, basement, garage) — or jump straight to [level 3](#level-3--advanced-build) with the Victron Blue Smart charger which is much quieter (passive cooling under light load).
+
+#### 🔌 Wiring diagram
 
 ```
                  230 V
                    │
                    ▼
             ┌─────────────┐
-            │  Chargeur   │
-            │ Victron 24V │
+            │   Charger   │
+            │ 24V 5A inc. │ ← bundled with the battery
             └──────┬──────┘
                    │  24 V DC
                    ▼
             ┌─────────────┐
-            │  Batterie   │
-            │  LiFePO₄    │  ← stocke l'énergie
+            │   Battery   │
+            │  LiFePO₄    │  ← stores energy
             │  24V 60Ah   │
             └──────┬──────┘
-                   │  24 V DC (avec fusible 30 A)
+                   │  24 V DC (with 15 A fuse)
         ┌──────────┼──────────┐
         │          │          │
         ▼          ▼          ▼
@@ -99,66 +102,66 @@ Le système se construit en trois niveaux, chacun ajoutant des fonctionnalités.
     └───────┘ └────────┘ └─────────┘
 ```
 
-#### 📝 Explications
+#### 📝 How it works
 
-Le principe : **la batterie est en parallèle entre le chargeur et les charges**. Elle est constamment maintenue chargée par le Victron en mode "storage" (~27,2 V), et débite automatiquement quand le secteur tombe — il n'y a aucun commutateur, aucune électronique au milieu.
+The principle: **the battery sits in parallel between the charger and the loads**. It's permanently kept charged by the bundled Kepworth charger in float mode, and starts feeding the loads automatically when mains drops — no switch, no electronics in the middle.
 
-- **ReefWave** : utilise le **connecteur jack 5,5 × 2,1 mm** (positif au centre)
-- **ReefRun et DC Skimmer** : utilisent le **connecteur étanche IP68 4 broches** propriétaire Red Sea (la pompe inclut son propre régulateur, le 24 V brut suffit)
-- Le chargeur Victron en mode **LiFePO₄ / Lithium** reste branché en permanence sur la batterie : pas de surcharge, il bascule en *storage* (~27,2 V) une fois la pleine charge atteinte
+- **ReefWave** uses a **5.5 × 2.1 mm jack** (centre positive)
+- **ReefRun and DC Skimmer** use Red Sea's proprietary **IP68 4-pin connector** (the pump has its own regulator, so raw 24 V is fine)
+- The bundled charger stays on the battery permanently: it switches to float mode automatically once the battery is full
 
-> ⚠️ **Sécurité** : le **fusible 30 A** sur le pôle + de la batterie, juste après celle-ci, est obligatoire. En cas de court-circuit côté charges, c'est ce qui sauve la batterie (et la maison).
+> ⚠️ **Safety**: a **15 A fuse** on the battery's + pole, right at the battery output, is mandatory. This rating is matched to the 2.5 mm² cable (~16 A max) and gives a comfortable margin over the typical ~9 A peak draw (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). In case of a short on the load side, this is what saves the battery (and your house).
 
-#### ✅ Ce que vous obtenez
+#### ✅ What you get
 
-- Continuité électrique pendant les coupures (autonomie ~6-12 h selon vos pompes)
-- Aucune intervention nécessaire à la coupure
-- Aucun monitoring, aucune dégradation : les pompes tournent à 100 % jusqu'à ce que la batterie soit vide
+- Power continuity during outages (autonomy ~6-12 h depending on your pumps)
+- Zero intervention required when the outage hits
+- No monitoring, no graceful degradation: the pumps run at 100% until the battery is empty
 
 #### ❌ Limitations
 
-- Aucune visibilité sur l'état de la batterie
-- Aucune gestion de la dégradation : la batterie se vide vite, tout s'éteint d'un coup à la fin
-- Risque de décharge profonde répétée → vieillissement accéléré
+- No visibility on the battery state
+- No graceful degradation: the battery drains fast, then everything goes dark at once
+- Risk of repeated deep discharges → accelerated ageing
 
 ---
 
-### Niveau 2 — Montage normal *(recommandé)*
+### Level 2 — Standard build *(recommended)*
 
-> **Objectif** : ajouter le monitoring batterie temps réel, la détection automatique de coupure, et la dégradation progressive des pompes selon le SoC. C'est le niveau **recommandé** pour une installation pérenne.
+> **Goal**: add real-time battery monitoring, automatic outage detection, and progressive pump dimming based on SoC. This is the **recommended** level for a long-term install.
 
-#### 📦 Matériel additionnel (en plus du niveau 1)
+#### 📦 Additional bill of materials (on top of level 1)
 
-| Composant | Modèle suggéré | Prix indicatif |
+| Component | Suggested model | Indicative price |
 |---|---|---|
-| ![INA226](docs/images/ina226.png) **Module INA226 0-36V/20A** (shunt 2 mΩ embarqué) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
-| ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (ou plus récent) | [Pi 3 B+ 1 Go chez Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
-| Carte microSD 16 Go classe 10 + alim USB du Pi | — | ~15 € |
-| Convertisseur DC-DC 24 V → 5 V 3 A pour le Pi | Step-down buck regulator | ~8 € |
-| ![Finder](docs/images/finder.png) **Relais Finder 40.61.8.230.4000** (bobine 230 V, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
-| ![Support Finder](docs/images/support.png) **Socle DIN Finder 95.95.3** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
-| Rail DIN 35 mm (10 cm) + petit boîtier électrique | — | ~15 € |
+| ![INA226](docs/images/ina226.png) **INA226 0-36V/20A module** (2 mΩ shunt onboard) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
+| ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (or newer) | [Pi 3 B+ 1 GB at Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
+| 16 GB class 10 microSD card + Pi USB power supply | — | ~15 € |
+| 24 V → 5 V 3 A DC-DC step-down converter for the Pi | Buck regulator | ~8 € |
+| ![Finder relay](docs/images/finder.png) **Finder 40.61.8.230.4000 relay** (230 V coil, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
+| ![Finder socket](docs/images/support.png) **Finder 95.95.3 DIN socket** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
+| 35 mm DIN rail (10 cm) + small electrical enclosure | — | ~15 € |
 
-**Budget additionnel : ~112 €** — **Budget cumulé niveau 2 : ~612 €**
+**Additional budget: ~112 €** — **Cumulative level 2: ~402 €**
 
-#### 🔌 Schéma de montage
+#### 🔌 Wiring diagram
 
 ```
                  230 V ─────┬───────────────┐
                             │               │
                             ▼               ▼
                      ┌─────────────┐   ┌──────────┐
-                     │  Chargeur   │   │  Relais  │
-                     │ Victron 24V │   │  Finder  │
+                     │   Charger   │   │  Finder  │
+                     │ Victron 24V │   │   relay  │
                      └──────┬──────┘   │   40.61  │
-                            │ 24V      │  bobine  │
+                            │ 24V      │   coil   │
                             ▼          │   230V   │
                      ┌─────────────┐   └────┬─────┘
-                     │  Batterie   │        │ NO/NC
+                     │   Battery   │        │ NO/NC
               ┌──────┤  LiFePO₄    │        │ contact
               │      └──────┬──────┘        │
               │             │ 24V           │
-              │      [Shunt INA226]         │
+              │      [INA226 shunt]         │
               │             │               │
               │             ▼               │
               │    ┌────────────────┐       │
@@ -177,41 +180,41 @@ Le principe : **la batterie est en parallèle entre le chargeur et les charges**
        ReefRun / ReefWave / DC Skimmer
 ```
 
-#### 📝 Explications
+#### 📝 How it works
 
-**Câblage du shunt INA226** (le plus important) :
+**INA226 shunt wiring** (most important):
 
-Le module INA226 doit être **en série sur le pôle + de la batterie**, entre la batterie et toutes les charges. C'est ce qui lui permet de mesurer le courant net entrant/sortant.
+The INA226 module must be **in series on the battery's + pole**, between the battery and all the loads. That's what lets it measure the net current flowing in or out of the battery.
 
 ```
-Batterie (+) ──► [IN+ shunt INA226 IN−] ──► Bus + 24V ─┬─► Chargeur (sortie)
-                                                        ├─► DC-DC vers Pi
-                                                        ├─► ReefRun
-                                                        ├─► ReefWave
-                                                        └─► DC Skimmer
+Battery (+) ──► [IN+ INA226 shunt IN−] ──► +24V bus ─┬─► Charger output
+                                                      ├─► DC-DC to Pi
+                                                      ├─► ReefRun
+                                                      ├─► ReefWave
+                                                      └─► DC Skimmer
 
-Batterie (−) ──────────────────────────► Bus − (commun)
+Battery (−) ────────────────────────────► − bus (common)
 ```
 
-Le shunt voit donc :
-- **courant positif** = la batterie débite (décharge ou alimentation des charges)
-- **courant négatif** = la batterie reçoit (charge depuis le Victron)
+The shunt then sees:
+- **positive current** = battery is discharging (powering the loads)
+- **negative current** = battery is charging (from the Victron)
 
-**Câblage du relais de détection de coupure** :
+**Outage-detection relay wiring**:
 
-Le relais Finder 40.61.8.230 est un **détecteur d'absence de tension secteur** : sa bobine est alimentée en 230 V, ses contacts NO/NC basculent quand le secteur tombe.
+The Finder 40.61.8.230 relay is a **mains-presence detector**: its coil runs on 230 V, its NO/NC contacts toggle when mains drops.
 
-| Borne du socle 95.95.3 | Connexion |
+| 95.95.3 socket terminal | Connection |
 |---|---|
-| A1 | Phase 230 V |
-| A2 | Neutre 230 V |
-| 11 (commun) | GND du Pi |
-| 12 (NC) | GPIO 26 du Pi (avec pull-up interne) |
+| A1 | 230 V live |
+| A2 | 230 V neutral |
+| 11 (common) | Pi GND |
+| 12 (NC) | Pi GPIO 26 (with internal pull-up) |
 
-Sur secteur OK, la bobine est alimentée → contact NC ouvert → GPIO lit 1 (tiré vers 3.3 V par pull-up).
-Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 0.
+When mains is OK, the coil is energised → NC contact is open → GPIO reads 1 (pulled up to 3.3 V).
+On outage, the coil drops → NC contact closes → GPIO is pulled to GND, reads 0.
 
-**Connexions Pi → INA226** (4 fils) :
+**Pi → INA226 connections** (4 wires):
 
 | Pi GPIO | INA226 |
 |---|---|
@@ -220,123 +223,122 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 | Pin 3 (GPIO 2 SDA) | SDA |
 | Pin 5 (GPIO 3 SCL) | SCL |
 
-#### ✅ Ce que vous obtenez
+#### ✅ What you get
 
-- **Monitoring temps réel** : tension batterie, courant, puissance, SoC calculé en coulomb counting
-- **Détection de coupure en < 1 seconde** via le relais
-- **Dégradation automatique** : les ReefWave passent à 70 %, puis 50 %, puis 10 % au fil du SoC qui baisse ; le skimmer s'arrête en mode survie ; etc.
-- **Snapshots de configuration** : à la coupure, la conf d'origine de chaque pompe est sauvegardée sur disque ; au retour, elle est restaurée à l'identique
-- **Buffer MQTT** : pendant que HA est down (ce qui arrive presque toujours pendant une vraie coupure), les mesures sont stockées localement et rejouées dès que le broker remonte → vous avez la **courbe de décharge complète** dans HA
-- **Failover réseau** : si la box Wi-Fi tombe aussi, le Pi bascule en hotspot pour rester joignable
+- **Real-time monitoring**: battery voltage, current, power, SoC computed via coulomb counting
+- **Sub-second outage detection** via the relay
+- **Automatic dimming**: ReefWave pumps step down to 70%, then 50%, then 10% as SoC drops; the skimmer stops in survival mode; etc.
+- **Configuration snapshots**: at outage, every pump's original config is saved on disk; on return, it's restored exactly as it was
+- **MQTT buffer**: while HA is down (which almost always happens during a real outage), measurements are stored locally and replayed once the broker comes back → you get the **complete discharge curve** in HA
+- **Network failover**: if the Wi-Fi router dies too, the Pi switches to its own hotspot to stay reachable
 
 ---
 
-### Niveau 3 — Montage avancé
+### Level 3 — Advanced build
 
-> **Objectif** : ajouter le contrôle à distance du chargeur et un disjoncteur connecté pour pouvoir déclencher des **tests de décharge programmés** depuis Home Assistant.
+> **Goal**: add remote charger control and a connected breaker to run **scheduled discharge tests** from Home Assistant.
 
-#### 📦 Matériel additionnel (en plus du niveau 2)
+#### 📦 Additional bill of materials (on top of level 2)
 
-| Composant | Modèle suggéré | Prix indicatif |
+| Component | Suggested model | Indicative price |
 |---|---|---|
-| ![Chargeur BLE](docs/images/chargeur.png) **Chargeur Victron Blue Smart IP22 24/12** (avec BLE) | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
-| ![Disjoncteur](docs/images/disjoncteur.png) **Disjoncteur connecté Wi-Fi 16 A avec compteur** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
+| ![BLE charger](docs/images/chargeur.png) **Victron Blue Smart IP22 24/12** charger *(replaces the bundled Kepworth charger — silent + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
+| ![Breaker](docs/images/disjoncteur.png) **Wi-Fi 16 A connected breaker with metering** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
 
-**Budget additionnel** :
-- Chargeur BLE en remplacement du chargeur niveau 1 : **+15 €**
-- Disjoncteur connecté : **+30 €**
+**Additional budget: ~185 €** (Victron BLE charger replacing the bundled one + connected breaker)
 
-**Budget cumulé niveau 3 : ~657 €**
+**Cumulative level 3: ~587 €**
 
-#### 🔌 Schéma de montage
+#### 🔌 Wiring diagram
 
 ```
-        230 V ──► [Disjoncteur Tongou Wi-Fi] ──┬──────────────┐
-                                                │              │
-                                                ▼              ▼
-                                         ┌─────────────┐   ┌──────────┐
-                                         │ Chargeur    │   │  Relais  │
-                                         │Victron BLE  │   │  Finder  │
-                                         │24/12 Smart  │   │ détection│
-                                         └──────┬──────┘   └────┬─────┘
-                                                │ 24 V           │
-                                                ▼                │
-                                         ┌─────────────┐         │
-                                         │  Batterie   │◄────[shunt INA226]
-                                         └──────┬──────┘         │
-                                                │ 24 V           │
-                                                ▼                │
-                                          (charges)              │
-                                                                 │
-                                          ┌──── Wi-Fi ───┐       │
-                                          │              │       │
-                                          ▼              ▼       │
+        230 V ──► [Tongou Wi-Fi breaker] ──┬──────────────┐
+                                            │              │
+                                            ▼              ▼
+                                     ┌─────────────┐   ┌──────────┐
+                                     │ Charger     │   │  Finder  │
+                                     │Victron BLE  │   │  relay   │
+                                     │24/12 Smart  │   │ detector │
+                                     └──────┬──────┘   └────┬─────┘
+                                            │ 24 V          │
+                                            ▼               │
+                                     ┌─────────────┐        │
+                                     │   Battery   │◄───[INA226 shunt]
+                                     └──────┬──────┘        │
+                                            │ 24 V          │
+                                            ▼               │
+                                          (loads)           │
+                                                            │
+                                          ┌──── Wi-Fi ───┐  │
+                                          │              │  │
+                                          ▼              ▼  │
                                     Home Assistant   Raspberry Pi
-                                    (intégration         GPIO 26 ◄┘
-                                     Tongou)
+                                    (Tongou             GPIO 26 ◄┘
+                                     integration)
                                           │
                                           │ BLE
                                           ▼
-                                    Chargeur Victron
-                                    (état temps réel)
+                                    Victron charger
+                                    (live state)
 ```
 
-#### 📝 Explications
+#### 📝 How it works
 
-**Disjoncteur Tongou TO-Q-SY1-JWT** :
+**Tongou TO-Q-SY1-JWT breaker**:
 
-Disjoncteur DIN modulaire qui se commande via Wi-Fi (protocole Tuya, intégrable à HA via [Local Tuya](https://github.com/rospogrigio/localtuya) ou l'intégration Tuya Cloud officielle). Il fournit aussi la mesure consommation en kWh / V / A en temps réel — utile pour vérifier que le chargeur bascule bien sur batterie quand on simule une coupure.
+DIN-modular breaker controlled over Wi-Fi (Tuya protocol, integrates with HA via [Local Tuya](https://github.com/rospogrigio/localtuya) or the official Tuya Cloud integration). It also provides live kWh / V / A metering — handy to verify that the charger really swings to battery feed when you simulate an outage.
 
-**Câblage** : le disjoncteur s'installe **juste avant** le chargeur Victron et le relais Finder. Quand on le coupe via HA, c'est exactement comme une vraie coupure secteur :
+**Wiring**: the breaker is installed **right before** the Victron charger and the Finder relay. When you trip it from HA, it's exactly like a real mains outage:
 
-- Le chargeur ne fournit plus rien
-- Le relais Finder voit l'absence de tension → bascule de contact
-- Le Pi voit la coupure via GPIO et déclenche immédiatement la dégradation
+- The charger stops delivering anything
+- The Finder relay sees no mains → its contact toggles
+- The Pi sees the outage on GPIO and triggers degradation immediately
 
-**Chargeur Victron Blue Smart IP22 24/12 (avec BLE)** :
+**Victron Blue Smart IP22 24/12 charger (with BLE)**:
 
-Identique au chargeur niveau 1 mais avec Bluetooth Low Energy. Permet de remonter dans HA :
-- L'état du chargeur (`storage` / `bulk` / `absorption` / `float`)
-- La tension et le courant de sortie temps réel
-- Les éventuelles erreurs (overheat, battery voltage out of range…)
+Replaces the Kepworth charger that came bundled with the battery. On top of adding Bluetooth Low Energy, **it's noticeably quieter**: passive cooling under light load, the fan only kicks in during heavy charging above 8 A. Perfect if the system sits in a living area.
 
-Configuration : récupérer la **clé de chiffrement** depuis l'app VictronConnect (Settings → Product Info → Instant Readout → "Show"), à entrer dans le wizard de configuration.
+Reports to HA:
+- Charger state (`storage` / `bulk` / `absorption` / `float`)
+- Live output voltage and current
+- Any errors (overheat, battery voltage out of range…)
 
-#### ✅ Ce que vous obtenez
+Configuration: grab the **encryption key** from the VictronConnect app (Settings → Product Info → Instant Readout → "Show"), to enter in the configuration wizard.
 
-- **Contrôle distant du secteur** vers la batterie depuis HA
-- **Tests de décharge programmés** : voir la [section blueprint](#-blueprint-test-automatique-de-batterie)
-- **Visibilité complète** sur le chargeur (mode, courant, erreurs)
-- **Mesure de la consommation totale** en kWh via le disjoncteur Tongou (utile pour le calcul d'autonomie réelle)
+#### ✅ What you get
+
+- **Remote mains control** to the battery from HA
+- **Scheduled discharge tests**: see the [blueprint section](#-automatic-battery-test-blueprint)
+- **Full charger visibility** (mode, current, errors)
+- **Total consumption metering** in kWh via the Tongou breaker (useful for real autonomy figures)
 
 ---
 
-### Augmentation d'autonomie
+### Increasing autonomy
 
-> **Objectif** : doubler (ou plus) la capacité batterie pour des coupures plus longues.
+> **Goal**: double (or more) battery capacity for longer outages.
 
-Le moyen le plus simple et le plus sûr est d'ajouter une ou plusieurs **batteries identiques en parallèle**. Les batteries LiFePO₄ avec BMS interne (comme la Kepworth 24V 60Ah) acceptent ce mode de fonctionnement nativement.
+The simplest and safest way is to add one or more **identical batteries in parallel**. LiFePO₄ batteries with internal BMS (like the Kepworth 24V 60Ah) accept this natively.
 
-#### 📦 Matériel par batterie additionnelle
+#### 📦 Per-additional-battery BoM
 
-| Composant | Prix indicatif |
+| Component | Indicative price |
 |---|---|
-| 1× batterie LiFePO₄ 24V 60Ah identique | ~330 € |
-| 2× câbles de liaison 25 mm² (50 cm rouge + 50 cm noir, cosses serties) | ~25 € |
-| 1× fusible **inline 50 A** (un par batterie additionnelle) | ~10 € |
+| 1× identical 24V 60Ah LiFePO₄ battery | ~260 € |
+| 2× 2.5 mm² jumper cables (50 cm red + 50 cm black, crimped lugs) | ~10 € |
+| 1× **15 A inline fuse** (one per additional battery) | ~3 € |
 
-**Budget par +60 Ah : ~365 €**
+**Per +60 Ah budget: ~273 €**
 
-#### 🔌 Schéma de montage parallèle
+#### 🔌 Parallel wiring diagram
 
 ```
-                Bus + (vers chargeur et charges)
+                + bus (to charger and loads)
                       ▲
                       │
         ┌─────────────┼─────────────┐
         │             │             │
-   [fusible]     [fusible]      [fusible]
-   50 A          50 A           50 A
+   [fuse 15A]   [fuse 15A]    [fuse 15A]
         │             │             │
    ┌────┴────┐   ┌────┴────┐   ┌────┴────┐
    │ Bat #1  │   │ Bat #2  │   │ Bat #3  │
@@ -346,81 +348,81 @@ Le moyen le plus simple et le plus sûr est d'ajouter une ou plusieurs **batteri
         └─────────────┼─────────────┘
                       │
                       ▼
-                Bus − (commun)
+                − bus (common)
 ```
 
-#### 📝 Règles importantes
+#### 📝 Important rules
 
-1. **Batteries identiques uniquement** : même marque, même modèle, idéalement même âge. Mélanger des batteries de capacités ou d'âges différents fait travailler la plus faible en surcharge → vieillissement accéléré.
-2. **Équilibrage initial** : avant la mise en parallèle, charger chaque batterie individuellement à 100 % et vérifier qu'elles sont à la même tension (±0,1 V). Sinon, l'équilibrage se fera par un courant fort entre batteries au branchement → risque de fusion des cosses.
-3. **Câbles de liaison de section égale** : si une batterie a un câble plus long ou plus fin que les autres, elle débitera moins → déséquilibre permanent.
-4. **Un fusible par batterie**, pas un seul fusible commun : en cas de défaut sur une batterie, seule celle-là est isolée.
-5. **Pas de modification du shunt INA226** : il reste sur le bus commun, il voit alors le courant **total** des deux batteries cumulées — c'est exactement ce qu'on veut pour le SoC.
+1. **Identical batteries only**: same brand, same model, ideally same age. Mixing capacities or ages forces the weaker pack to overwork → accelerated ageing.
+2. **Initial balancing**: before paralleling, charge each battery individually to 100% and check they're at the same voltage (±0.1 V). Otherwise, balancing will happen via a strong inrush current at connect time → risk of melting the lugs.
+3. **Equal-section jumper cables**: if one battery has a longer or thinner cable, it'll deliver less current → permanent imbalance.
+4. **One fuse per battery**, not a single shared fuse: in case of a fault on one battery, only that one is isolated.
+5. **No INA226 modification**: it stays on the common bus, so it sees the **total** current of all batteries combined — exactly what we want for SoC.
 
-#### 📊 Capacités cumulées et autonomies estimées
+#### 📊 Combined capacities and estimated autonomy
 
-Pour un setup typique (2× ReefWave 45 + 1× ReefRun 12000 + DC Skimmer + Pi) :
+For a typical setup (2× ReefWave 45 + 1× ReefRun 12000 + DC Skimmer + Pi):
 
-| Configuration | Capacité utile | Autonomie cible 24 h |
+| Configuration | Usable capacity | 24 h target |
 |---|---|---|
-| 1× 60 Ah | 1228 Wh | atteignable (estimé 32 h) |
-| 2× 60 Ah | 2457 Wh | confortable (estimé 60 h+) |
-| 3× 60 Ah | 3686 Wh | luxueuse (90 h+) |
+| 1× 60 Ah | 1228 Wh | reachable (~32 h) |
+| 2× 60 Ah | 2457 Wh | comfortable (~60 h+) |
+| 3× 60 Ah | 3686 Wh | luxurious (~90 h+) |
 
-> ⚠️ Re-lancez le wizard `configure.py` après ajout d'une batterie pour mettre à jour la capacité totale dans `config.json`. Le calcul de scénario en tiendra compte automatiquement.
+> ⚠️ Re-run `configure.py` after adding a battery so the new total capacity is picked up in `config.json`. The scenario builder will use it automatically.
 
 ---
 
 ## ⚙️ Configuration
 
-Le wizard `configure.py` est interactif et bilingue (FR/EN selon la locale). Il guide à travers 6 étapes :
+The `configure.py` wizard is interactive and bilingual (FR/EN based on locale). It walks through 6 steps:
 
-1. **Réseau** — confirmation du SSID Wi-Fi domestique (lu depuis NetworkManager)
-2. **Détection des équipements ReefBeat** — scan automatique du sous-réseau, sélection des équipements à mettre sur batterie
-3. **Détection de coupure** — choix entre relais GPIO (recommandé) et monitoring de courant
-4. **Batterie** — capacité (Ah) du pack
-5. **Monitoring** — INA226 (obligatoire, détection auto sur I2C) + Victron BLE (optionnel)
-6. **Mode de secours** — choix entre :
-   - **Auto** (recommandé) : on donne une cible d'autonomie, le wizard détecte le Pi, demande les charges auxiliaires, et calcule les niveaux SoC + intensités optimales
-   - **Simple** : une seule vitesse de secours sur tout
+1. **Network** — confirm the home Wi-Fi SSID (read from NetworkManager)
+2. **ReefBeat device discovery** — auto-scan the local subnet, pick the devices to put on battery
+3. **Outage detection** — pick between GPIO relay (recommended) and current monitoring
+4. **Battery** — pack capacity in Ah
+5. **Monitoring** — INA226 (mandatory, auto-detected on I2C) + Victron BLE (optional)
+6. **Backup mode** — pick between:
+   - **Auto** (recommended): give a target autonomy, the wizard detects the Pi, asks for auxiliary loads, and computes optimal SoC levels and pump intensities
+   - **Simple**: a single backup speed across the board
 
-Le résultat est sauvegardé dans `config.json` et peut être édité à la main si besoin.
+The result is saved to `config.json` and can be edited by hand if needed.
 
 ---
 
 ## 🏠 Home Assistant
 
-### Capteurs auto-publiés
+### Auto-published sensors
 
-Tous les capteurs apparaissent automatiquement dans HA après publication des configs MQTT discovery.
+All sensors appear automatically in HA after MQTT discovery is published.
 
-| Capteur | Description |
+| Sensor | Description |
 |---|---|
-| `sensor.reef_battery_voltage` | Tension batterie (V) |
-| `sensor.reef_battery_current` | Courant (A, + = décharge) |
-| `sensor.reef_battery_power` | Puissance (W) |
+| `sensor.reef_battery_voltage` | Battery voltage (V) |
+| `sensor.reef_battery_current` | Current (A, + = discharging) |
+| `sensor.reef_battery_power` | Power (W) |
 | `sensor.reef_battery_soc` | State of Charge (%) |
 | `sensor.reef_battery_power_state` | mains / battery |
-| `sensor.reef_battery_pump_intensity` | Intensité pompes moyenne (%) |
-| `sensor.reef_battery_runtime` | Autonomie estimée (h) |
-| `sensor.reef_battery_outage_duration` | Durée coupure courante (min) |
+| `sensor.reef_battery_pump_intensity` | Average pump intensity (%) |
+| `sensor.reef_battery_runtime` | Estimated runtime (h) |
+| `sensor.reef_battery_outage_duration` | Current outage duration (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 |
 
-**Si Victron BLE est configuré** (niveau 3) :
+**If Victron BLE is configured** (level 3):
 
-| Capteur | Description |
+| Sensor | Description |
 |---|---|
-| `sensor.reef_battery_charger_voltage` | Tension de sortie chargeur (V) |
-| `sensor.reef_battery_charger_current` | Courant de sortie chargeur (A) |
+| `sensor.reef_battery_charger_voltage` | Charger output voltage (V) |
+| `sensor.reef_battery_charger_current` | Charger output current (A) |
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
 
-### Buffer MQTT
+### MQTT buffer
 
-Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reef-battery-monitor/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
+During an outage, HA and the MQTT broker are almost always unavailable (they sit on the same infrastructure as mains). The service writes every measurement to `/var/lib/reef-battery-monitor/mqtt/messages.jsonl` and replays them automatically once the broker comes back → you get the full curve after the fact, with no gaps.
 
-Configuration optionnelle dans `config.json` :
+Optional configuration in `config.json`:
 
 ```json
 "mqtt": {
@@ -431,131 +433,132 @@ Configuration optionnelle dans `config.json` :
 
 ---
 
-## 🤖 Blueprint test automatique de batterie
+## 🤖 Automatic battery-test blueprint
 
-> **Disponible uniquement avec le niveau 3** (disjoncteur Tongou requis).
+> **Available only with level 3** (Tongou breaker required).
 
-Ce blueprint Home Assistant déclenche périodiquement un **test de décharge réel** : il coupe le disjoncteur secteur pendant 40 minutes, observe la courbe de décharge, et la compare au prévisionnel calculé par le scénario.
+This Home Assistant blueprint periodically triggers a **real discharge test**: it opens the mains breaker for 40 minutes, watches the discharge, and compares it to the forecast computed by the scenario.
 
-### Principe
+### How it works
 
 ```
-Date programmée (ex: dernier dimanche du mois, tous les 3 mois)
+Scheduled date (e.g. last Sunday of the month, every 3 months)
       │
       ▼
-Présence "user_y" détectée à la maison ?
+Is "user_y" detected at home?
       │
-      ├─── Non ──► Test annulé silencieusement
+      ├─── No ──► Test silently cancelled
       │
-      └─── Oui
+      └─── Yes
               │
               ▼
-        Notif HA actionnable sur téléphone
-        "Lancer test batterie 40 min ?"
-        (pas de timeout : attend une réponse explicite)
+        Actionable HA notification on phone
+        "Run 40-minute battery test?"
+        (no timeout: waits for an explicit answer)
               │
-              ├─── Refus ──────────────────► Annulé
+              ├─── Deny ─────────────────► Cancelled
               │
               └─── Accept
                       │
                       ▼
-              Disjoncteur OFF
-              SoC / tension / puissance initiaux sauvegardés
-              Calcul du forecast (puissance × durée / capacité)
+              Breaker OFF
+              Initial SoC / voltage / power saved
+              Forecast computed (power × duration / capacity)
                       │
                       ▼
-              Attendre 40 min, OU abort immédiat si tension < seuil
-              (le service bascule en mode batterie,
-               le buffer MQTT enregistre tout)
+              Wait 40 minutes, OR abort immediately
+              if voltage drops below safety threshold
+              (the service falls back to battery,
+               the MQTT buffer captures everything)
                       │
                       ▼
-              Disjoncteur ON
+              Breaker ON
                       │
                       ▼
-              Analyse 3 axes :
-                📊 Forecast : SoC consommé réel vs prévision
-                🔋 Profil tension : tension finale dans le plateau LFP ?
-                ⏱  Autonomie extrapolée jusqu'à 20% SoC
+              Three-axis analysis:
+                📊 Forecast: actual SoC drop vs prediction
+                🔋 Voltage profile: still in the LFP plateau?
+                ⏱  Extrapolated runtime down to 20% SoC
                       │
                       ▼
-              Notif récap au mobile + log HA
+              Phone summary notification + HA log
 ```
 
-### Installation du blueprint
+### Installing the blueprint
 
-Le blueprint est fourni dans le dépôt sous [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
+The blueprint is shipped under [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
 
-Pour l'installer dans HA :
+To install in HA:
 
-1. Copier le fichier vers `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
-2. Recharger les blueprints dans HA (Paramètres → Automatisations → ⋮ → Recharger)
-3. Créer une nouvelle automatisation à partir de ce blueprint
-4. Renseigner :
-   - **Heure** (ex. 14:00) — éviter les heures de nourrissage
-   - **Jour de la semaine** : lundi à dimanche
-   - **Occurrence** : 1er, 2ème, 3ème, 4ème, ou **dernier** (recommandé pour les week-ends)
-   - **Période** (mois) : 1, 3, 6 mois entre tests
-   - **Personne dont la présence est requise** : ex. `person.elwin`
-   - **Service de notification** : ex. `mobile_app_pixel_8` (sans le `notify.` préfixe)
-   - **Disjoncteur connecté** : entité switch du Tongou
-   - **Capteur SoC / tension / puissance** : `sensor.reef_battery_*`
-   - **Capacité batterie** (Wh) : ex. 1228 pour 60Ah × 25.6V × 0.8 DoD
-   - **Durée du test** (min) : 40 par défaut
-   - **Tolérance écart forecast** (% SoC) : 3 par défaut
-   - **Seuil tension d'arrêt d'urgence** (V) : 24.0 par défaut
-   - **Plateau LFP minimum** (V) : 25.6 par défaut
+1. Copy the file to `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
+2. Reload blueprints in HA (Settings → Automations → ⋮ → Reload)
+3. Create a new automation from this blueprint
+4. Fill in:
+   - **Time of day** (e.g. 14:00) — avoid feeding hours
+   - **Weekday**: Monday through Sunday
+   - **Occurrence**: 1st, 2nd, 3rd, 4th, or **last** (recommended for weekends)
+   - **Period (months)**: 1, 3 or 6 months between tests
+   - **Person whose presence is required**: e.g. `person.elwin`
+   - **Notification service**: e.g. `mobile_app_pixel_8` (without the `notify.` prefix)
+   - **Connected breaker**: the Tongou switch entity
+   - **SoC / voltage / power sensor**: `sensor.reef_battery_*`
+   - **Battery capacity (Wh)**: e.g. 1228 for 60Ah × 25.6V × 0.8 DoD
+   - **Test duration (min)**: 40 by default
+   - **Forecast deviation tolerance (% SoC)**: 3 by default
+   - **Emergency voltage floor (V)**: 24.0 by default
+   - **LFP plateau lower bound (V)**: 25.6 by default
 
-### Précautions importantes
+### Important precautions
 
-⚠️ **Ne jamais lancer un test sans personne à la maison** : si la batterie est en mauvais état ou si le scénario est mal calibré, le test peut entraîner l'arrêt total des pompes après les 40 minutes. Un humain doit pouvoir intervenir manuellement.
+⚠️ **Never run a test with nobody at home**: if the battery is in poor health or the scenario is mis-calibrated, the test could lead to all pumps stopping after the 40 minutes. A human must be able to step in.
 
-⚠️ **Première utilisation** : faire un test **manuel** d'abord (couper le disjoncteur à la main pendant 5-10 min) pour vérifier que tout le système réagit correctement avant de faire des tests automatisés de 40 min.
+⚠️ **First use**: do a **manual** test first (open the breaker by hand for 5-10 min) to verify the whole system reacts correctly before unleashing 40-minute automated tests.
 
-⚠️ **Timing** : éviter les heures de nourrissage des poissons / coraux. Choisir un créneau calme.
+⚠️ **Timing**: avoid feeding hours for fish/corals. Pick a quiet slot.
 
 ---
 
-## 📁 Structure du projet
+## 📁 Project structure
 
 ```
-install.sh                          Installeur (curl | bash)
-configure.py                        Wizard interactif
-config.example.json                 Template par défaut
-config.json                         Votre configuration (généré par le wizard)
-main.py                             Boucle principale du service
-monitor.py                          Backend INA226 + auxiliaire Victron BLE
-outage.py                           Détection de coupure (relais GPIO)
-hotspot.py                          Failover réseau 3 niveaux
-controller.py                       Contrôle pompes + orchestration coupure
-mqtt_buffer.py                      Buffer MQTT avec replay
-power_estimation.py                 Tables de conso + builder de scénario
-ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
-setup.py                            Installeur de dépendances
-reef-battery-monitor.service        Unité systemd
+install.sh                          One-line installer (curl | bash)
+configure.py                        Interactive wizard
+config.example.json                 Default template
+config.json                         Your configuration (generated by the wizard)
+main.py                             Service main loop
+monitor.py                          INA226 backend + Victron BLE auxiliary
+outage.py                           Outage detection (relay GPIO)
+hotspot.py                          3-tier network failover
+controller.py                       Pump control + outage orchestration
+mqtt_buffer.py                      MQTT buffer with replay
+power_estimation.py                 Power tables + scenario builder
+ble_scan.py                         Victron BLE scanner (used by the wizard)
+setup.py                            Dependency installer
+reef-battery-monitor.service        systemd unit
 docs/
-  images/                           Images des composants pour la doc
+  images/                           Component images for the docs
 blueprints/
-  reef_battery_test.yaml            Blueprint HA de test de batterie
+  reef_battery_test.yaml            HA battery-test blueprint
 ```
 
 ---
 
-## 🐛 Dépannage
+## 🐛 Troubleshooting
 
-Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour les problèmes courants :
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common problems:
 
-- `Failed to add edge detection` → installer `python3-rpi-lgpio`
-- INA226 lit `0.000A` → vérifier le câblage en série du shunt
-- Victron `'Scanner' has no attribute 'scan'` → version `victron-ble` incompatible
-- MQTT discovery sensors absents → vérifier les credentials et le `base_topic`
+- `Failed to add edge detection` → install `python3-rpi-lgpio`
+- INA226 reads `0.000A` → check the shunt is wired in series
+- Victron `'Scanner' has no attribute 'scan'` → incompatible `victron-ble` version
+- MQTT discovery sensors missing → check credentials and `base_topic`
 
 ---
 
-## 📜 Licence
+## 📜 License
 
 MIT
 
-## 🔗 Projets liés
+## 🔗 Related projects
 
-- [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) — Intégration Home Assistant pour les équipements Red Sea ReefBeat
-- [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) — Carte Lovelace HA pour la gestion d'aquarium
+- [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) — Home Assistant integration for Red Sea ReefBeat devices
+- [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) — Lovelace card for HA aquarium management
