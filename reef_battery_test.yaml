@@ -1,0 +1,456 @@
+blueprint:
+  name: Reef Battery Discharge Test
+  description: >
+    Schedules a periodic battery-discharge test on a reef-aquarium backup
+    system.
+
+    The test runs on the Nth (or last) chosen weekday of every month
+    matching the period (e.g. "the last Sunday every 3 months"). When
+    the moment arrives, if the chosen person is at home, the user is
+    asked for permission via an actionable mobile notification and the
+    test waits indefinitely for an explicit answer.
+
+    On approval, the connected breaker is opened for N minutes; the
+    battery's SoC, voltage and power are recorded. After the test, a
+    summary notification compares the actual discharge with three
+    independent indicators: forecast accuracy, voltage profile health,
+    and extrapolated full runtime.
+
+    Requires the level-3 hardware: a smart breaker (e.g. Tongou
+    TO-Q-SY1-JWT) and the reefbeat-energy-backup service exposing the
+    standard MQTT-discovery sensors.
+
+  domain: automation
+  source_url: https://github.com/Elwinmage/reefbeatEnergyBackup/blob/main/blueprints/reef_battery_test.yaml
+
+  input:
+    # ----------------------------------------------------------------
+    # Schedule
+    # ----------------------------------------------------------------
+    test_time:
+      name: Time of day to run the test
+      description: >
+        Hour and minute when the test should start. Pick a quiet
+        period away from feedings.
+      default: "14:00:00"
+      selector:
+        time:
+
+    test_weekday:
+      name: Weekday of the test
+      default: 6
+      selector:
+        select:
+          options:
+            - { label: "Monday",    value: "0" }
+            - { label: "Tuesday",   value: "1" }
+            - { label: "Wednesday", value: "2" }
+            - { label: "Thursday",  value: "3" }
+            - { label: "Friday",    value: "4" }
+            - { label: "Saturday",  value: "5" }
+            - { label: "Sunday",    value: "6" }
+
+    test_weekday_occurrence:
+      name: Which occurrence of that weekday
+      description: >
+        "Last" picks the last matching weekday of the month, useful for
+        weekends near month-end. "1st", "2nd"... pick by counting from
+        the start of the month.
+      default: "last"
+      selector:
+        select:
+          options:
+            - { label: "1st",  value: "1" }
+            - { label: "2nd",  value: "2" }
+            - { label: "3rd",  value: "3" }
+            - { label: "4th",  value: "4" }
+            - { label: "Last", value: "last" }
+
+    test_period_months:
+      name: Test period (months)
+      description: >
+        How often the test runs. 1 = every month, 3 = quarterly,
+        6 = twice a year. The period is anchored to January
+        (month % period == 1).
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 12
+          step: 1
+
+    # ----------------------------------------------------------------
+    # Pre-conditions
+    # ----------------------------------------------------------------
+    presence_person:
+      name: Person whose presence is required
+      description: >
+        The test runs only if this person is at home. Prevents the
+        test from happening while the house is empty.
+      selector:
+        entity:
+          domain: person
+
+    notify_target:
+      name: Mobile notification service
+      description: >
+        Notification service for prompts and the summary
+        (e.g. "mobile_app_pixel_8"). The "notify." prefix is
+        added automatically.
+      default: "mobile_app"
+      selector:
+        text:
+
+    # ----------------------------------------------------------------
+    # Hardware bindings
+    # ----------------------------------------------------------------
+    breaker_switch:
+      name: Smart breaker switch entity
+      description: >
+        The Tongou (or compatible) smart breaker that controls the
+        mains feed to the reefbeat-energy-backup system.
+      selector:
+        entity:
+          domain: switch
+
+    soc_sensor:
+      name: Battery SoC sensor
+      default: sensor.reef_battery_soc
+      selector:
+        entity:
+          domain: sensor
+
+    voltage_sensor:
+      name: Battery voltage sensor
+      default: sensor.reef_battery_voltage
+      selector:
+        entity:
+          domain: sensor
+
+    power_sensor:
+      name: Battery power sensor (W)
+      description: >
+        Used to forecast the predicted SoC drop during the test.
+      default: sensor.reef_battery_power
+      selector:
+        entity:
+          domain: sensor
+
+    # ----------------------------------------------------------------
+    # Test parameters
+    # ----------------------------------------------------------------
+    battery_capacity_wh:
+      name: Battery capacity (Wh)
+      description: >
+        Usable battery capacity in watt-hours. For a 24V LiFePO4 pack
+        with 80% DoD: capacity_Ah * 25.6 * 0.8. E.g. 60Ah -> 1228 Wh.
+      default: 1228
+      selector:
+        number:
+          min: 100
+          max: 20000
+          step: 1
+          unit_of_measurement: Wh
+
+    test_duration_min:
+      name: Test duration (minutes)
+      description: >
+        How long to keep the breaker open. Default 40 min is long
+        enough to see meaningful discharge but short enough to be
+        safe on a healthy battery.
+      default: 40
+      selector:
+        number:
+          min: 5
+          max: 180
+          step: 5
+          unit_of_measurement: min
+
+    soc_drop_tolerance_pct:
+      name: Acceptable forecast deviation (% SoC)
+      description: >
+        If the observed SoC drop differs from the forecast by more
+        than this value, the test result is flagged as anomalous.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 20
+          unit_of_measurement: "%"
+
+    voltage_floor_v:
+      name: Emergency voltage floor (V)
+      description: >
+        If battery voltage drops below this value during the test,
+        the breaker is closed immediately to abort. Set safely above
+        your battery's low-voltage cutoff.
+      default: 24.0
+      selector:
+        number:
+          min: 20.0
+          max: 26.0
+          step: 0.1
+          unit_of_measurement: V
+
+    voltage_plateau_min_v:
+      name: Healthy LFP plateau lower bound (V)
+      description: >
+        For a small SoC drop, a healthy LiFePO4 pack should stay
+        above this voltage. Defaults to 25.6 V (the high end of the
+        knee region for a 24V 8S pack).
+      default: 25.6
+      selector:
+        number:
+          min: 24.0
+          max: 27.0
+          step: 0.1
+          unit_of_measurement: V
+
+# Variables propagate the inputs so subsequent steps can read them
+# through plain Jinja templates -- !input cannot be used directly
+# inside {{ }} expressions in actions/conditions.
+variables:
+  v_test_weekday: !input test_weekday
+  v_test_weekday_occurrence: !input test_weekday_occurrence
+  v_test_period_months: !input test_period_months
+  v_test_duration_min: !input test_duration_min
+  v_soc_drop_tolerance_pct: !input soc_drop_tolerance_pct
+  v_voltage_floor_v: !input voltage_floor_v
+  v_voltage_plateau_min_v: !input voltage_plateau_min_v
+  v_battery_capacity_wh: !input battery_capacity_wh
+  v_notify_target: !input notify_target
+  v_soc_sensor_id: !input soc_sensor
+  v_voltage_sensor_id: !input voltage_sensor
+  v_power_sensor_id: !input power_sensor
+
+trigger:
+  # Fire at the chosen time every day; conditions filter for the right
+  # day (weekday occurrence within the right month period).
+  - platform: time
+    at: !input test_time
+
+condition:
+  # 1. Right weekday?
+  - condition: template
+    value_template: "{{ now().weekday() == (v_test_weekday | int) }}"
+
+  # 2. Right occurrence of that weekday in the month?
+  #
+  # For 1st / 2nd / 3rd / 4th: the day-of-month falls in
+  #   [(N-1)*7 + 1 ... N*7]
+  # For "last": no other matching weekday remains in the month, i.e.
+  #   day + 7 > days_in_month.
+  - condition: template
+    value_template: >-
+      {%- set today = now().day -%}
+      {%- set month = now().month -%}
+      {%- set year = now().year -%}
+      {# Compute how many days in the current month #}
+      {%- set next_month = month + 1 if month < 12 else 1 -%}
+      {%- set next_year = year if month < 12 else year + 1 -%}
+      {%- set last_of_month_ts =
+            as_timestamp(strptime(
+              '%d-%02d-01' | format(next_year, next_month),
+              '%Y-%m-%d')) - 86400 -%}
+      {%- set days_in_month = last_of_month_ts | timestamp_custom('%d') | int -%}
+      {%- if v_test_weekday_occurrence == 'last' -%}
+        {{ today + 7 > days_in_month }}
+      {%- else -%}
+        {%- set n = v_test_weekday_occurrence | int -%}
+        {{ ((n - 1) * 7 + 1) <= today <= (n * 7) }}
+      {%- endif -%}
+
+  # 3. Right month within the period?
+  # E.g. period=3 -> only run in months 1, 4, 7, 10.
+  - condition: template
+    value_template: >-
+      {{ ((now().month - 1) % (v_test_period_months | int)) == 0 }}
+
+  # 4. Person at home (safety: never run a test in an empty house).
+  - condition: state
+    entity_id: !input presence_person
+    state: home
+
+action:
+  # ------------------------------------------------------------------
+  # 1. Ask the user to confirm
+  # ------------------------------------------------------------------
+  - alias: Send confirmation request
+    service: "notify.{{ v_notify_target }}"
+    data:
+      title: "🔋 Test batterie aquarium"
+      message: >-
+        Le test de décharge programmé peut démarrer.
+        Le secteur sera coupé pendant {{ v_test_duration_min }} minutes.
+        Confirmer le lancement ?
+      data:
+        actions:
+          - action: "REEF_TEST_CONFIRM"
+            title: "Lancer le test"
+          - action: "REEF_TEST_DENY"
+            title: "Annuler"
+        notification_icon: "mdi:battery-clock"
+        # Sticky on Android so the prompt stays until answered.
+        # iOS keeps it in Notification Center automatically.
+        sticky: "true"
+        tag: reef_battery_test_prompt
+
+  - alias: Wait for the user's explicit answer (no timeout)
+    # No timeout: the test only runs after explicit user approval, no
+    # matter when. If the user wants to cancel, they tap "Annuler".
+    # If they ignore the notif, nothing happens until they tap one
+    # of the two actions or the next scheduled run replaces the
+    # automation state.
+    wait_for_trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: REEF_TEST_CONFIRM
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: REEF_TEST_DENY
+
+  - alias: Abort if user denied
+    if:
+      - condition: template
+        value_template: >-
+          {{ wait.trigger.event.data.action == 'REEF_TEST_DENY' }}
+    then:
+      - service: "notify.{{ v_notify_target }}"
+        data:
+          title: "🔋 Test batterie annulé"
+          message: "Test annulé manuellement."
+          data:
+            tag: reef_battery_test_summary
+      - stop: User declined the test
+
+  # ------------------------------------------------------------------
+  # 2. Snapshot pre-test state + compute the forecast
+  # ------------------------------------------------------------------
+  - variables:
+      soc_before: "{{ states(v_soc_sensor_id) | float(0) }}"
+      voltage_before: "{{ states(v_voltage_sensor_id) | float(0) }}"
+      power_at_start_w: "{{ states(v_power_sensor_id) | float(0) }}"
+      test_start_ts: "{{ as_timestamp(now()) }}"
+      # Forecast: at the current power draw, how many SoC % will we
+      # lose during the test? Assumes the load profile stays roughly
+      # stable, which is reasonable because the service only degrades
+      # intensity when SoC actually drops -- and we won't drop much
+      # in 40 minutes.
+      predicted_drop_pct: >-
+        {%- set wh_consumed =
+              (power_at_start_w | abs) * (v_test_duration_min | float / 60.0) -%}
+        {{ ((wh_consumed / (v_battery_capacity_wh | float)) * 100) | round(1) }}
+
+  # ------------------------------------------------------------------
+  # 3. Run the test
+  # ------------------------------------------------------------------
+  - alias: Open the breaker (simulate outage)
+    service: switch.turn_off
+    target:
+      entity_id: !input breaker_switch
+
+  - alias: Wait for the duration, abort early on voltage floor breach
+    wait_for_trigger:
+      - platform: numeric_state
+        entity_id: !input voltage_sensor
+        below: !input voltage_floor_v
+    timeout:
+      minutes: !input test_duration_min
+    continue_on_timeout: true
+
+  - alias: Close the breaker (resume mains)
+    service: switch.turn_on
+    target:
+      entity_id: !input breaker_switch
+
+  # ------------------------------------------------------------------
+  # 4. Three-axis analysis
+  # ------------------------------------------------------------------
+  - variables:
+      aborted_early: "{{ wait.trigger is not none }}"
+      soc_after: "{{ states(v_soc_sensor_id) | float(0) }}"
+      voltage_after: "{{ states(v_voltage_sensor_id) | float(0) }}"
+      soc_drop: "{{ (soc_before - soc_after) | round(1) }}"
+      duration_actual_min: >-
+        {{ ((as_timestamp(now()) - test_start_ts) / 60) | round(0) }}
+
+      # AXIS 1 - Forecast accuracy:
+      # how close is the actual drop to what the running scenario predicted?
+      drop_deviation: >-
+        {{ (soc_drop - (predicted_drop_pct | float(0))) | abs | round(1) }}
+      forecast_ok: >-
+        {{ drop_deviation <= (v_soc_drop_tolerance_pct | float) }}
+
+      # AXIS 2 - Voltage profile health:
+      # a healthy LiFePO4 pack should stay in the plateau for any small
+      # SoC drop. If the voltage already collapsed below the plateau lower
+      # bound despite a modest drop, the pack's internal resistance has
+      # grown -- typical of a battery nearing end-of-life.
+      voltage_profile_ok: >-
+        {%- if soc_drop < 30 -%}
+          {{ voltage_after >= (v_voltage_plateau_min_v | float) }}
+        {%- else -%}
+          true
+        {%- endif -%}
+
+      # AXIS 3 - Extrapolated full runtime to 20% SoC (the safe floor for
+      # LFP cycle life). This is a linear projection -- valid because
+      # over 40 minutes at constant load, the curve really is linear.
+      extrapolated_runtime_to_20pct_h: >-
+        {%- if soc_drop > 0 -%}
+          {{ ((soc_after - 20) / soc_drop * duration_actual_min / 60)
+              | round(1) }}
+        {%- else -%}
+          0
+        {%- endif -%}
+
+      # Overall verdict combines the three axes; abort overrides everything.
+      overall_anomalous: >-
+        {{ (not forecast_ok) or (not voltage_profile_ok) }}
+
+  - alias: Send the summary notification
+    service: "notify.{{ v_notify_target }}"
+    data:
+      title: >-
+        {%- if aborted_early -%}
+          🛑 Test batterie ARRÊTÉ
+        {%- elif overall_anomalous -%}
+          ⚠️ Test batterie — anomalie
+        {%- else -%}
+          ✅ Test batterie OK
+        {%- endif -%}
+      message: >-
+        SoC : {{ soc_before }} % → {{ soc_after }} % (Δ {{ soc_drop }} %)
+        sur {{ duration_actual_min }} min.
+
+        📊 Prévision : {{ "OK" if forecast_ok else "ÉCART" }}
+        ({{ predicted_drop_pct }} % prévu, écart {{ drop_deviation }} %).
+
+        🔋 Profil tension : {{ "OK" if voltage_profile_ok else "SUSPECT" }}
+        (final {{ voltage_after }} V).
+
+        ⏱ Autonomie extrapolée jusqu'à 20 % SoC :
+        ~{{ extrapolated_runtime_to_20pct_h }} h.
+
+        {% if aborted_early %}
+        ⚠️ Test arrêté prématurément : tension batterie sous le seuil de sécurité.
+        {% endif %}
+        {% if not voltage_profile_ok and not aborted_early %}
+        ⚠️ La tension est descendue sous le plateau LFP malgré une faible décharge — capacité possiblement dégradée.
+        {% endif %}
+      data:
+        tag: reef_battery_test_summary
+
+  - alias: Log to HA logbook
+    service: logbook.log
+    data:
+      name: "Reef Battery Test"
+      message: >-
+        Discharge test: {{ soc_drop }}% drop in {{ duration_actual_min }} min,
+        forecast {{ "OK" if forecast_ok else "DEV" }} (delta {{ drop_deviation }}%),
+        voltage profile {{ "OK" if voltage_profile_ok else "SUSPECT" }},
+        extrapolated to 20% SoC: {{ extrapolated_runtime_to_20pct_h }}h.
+        {% if aborted_early %}ABORTED on voltage floor.{% endif %}
+      domain: automation
