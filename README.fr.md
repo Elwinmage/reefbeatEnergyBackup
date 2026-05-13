@@ -236,7 +236,15 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 
 ### Niveau 3 — Montage avancé
 
-> **Objectif** : ajouter le contrôle à distance du chargeur et un disjoncteur connecté pour pouvoir déclencher des **tests de décharge programmés** depuis Home Assistant.
+> **Objectif** : ajouter le contrôle à distance du chargeur, un disjoncteur connecté pour pouvoir déclencher des **tests de décharge programmés** depuis Home Assistant, et un modem 4G pour les notifications même quand tout le réseau est coupé.
+>
+> Les trois ajouts de ce niveau sont **indépendants** — vous pouvez installer la combinaison de votre choix :
+
+| Ajout | But | Installable seul ? |
+|---|---|---|
+| 🔌 **Chargeur Victron BLE** | Chargeur silencieux + état chargeur dans HA | ✅ Oui |
+| ⚡ **Disjoncteur connecté** | Tests de décharge automatisés depuis HA | ✅ Oui |
+| 📶 **Modem USB 4G LTE** | Notifications même quand le Wi-Fi est coupé | ✅ Oui |
 
 #### 📦 Matériel additionnel (en plus du niveau 2)
 
@@ -244,10 +252,9 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 |---|---|---|
 | ![Chargeur BLE](docs/images/chargeur.png) **Chargeur Victron Blue Smart IP22 24/12** *(remplace le chargeur Kepworth fourni — silencieux + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Disjoncteur](docs/images/disjoncteur.png) **Disjoncteur connecté Wi-Fi 16 A avec compteur** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
+| ![Huawei E3372h](docs/images/huawei-e3372h-320.png) **Modem USB 4G LTE Huawei E3372h-320** | [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) | ~40 € |
 
-**Budget additionnel : ~185 €** (chargeur Victron BLE en remplacement du chargeur fourni + disjoncteur connecté)
-
-**Budget cumulé niveau 3 : ~587 €**
+**Budget additionnel maximal : ~225 €** (les trois) — **Budget cumulé niveau 3 : ~627 €**
 
 #### 🔌 Schéma de montage
 
@@ -274,12 +281,14 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
                                           ▼              ▼       │
                                     Home Assistant   Raspberry Pi
                                     (intégration         GPIO 26 ◄┘
-                                     Tongou)
-                                          │
-                                          │ BLE
-                                          ▼
-                                    Chargeur Victron
-                                    (état temps réel)
+                                     Tongou)              │
+                                          │            USB │
+                                          │ BLE           ▼
+                                          ▼         ┌───────────┐
+                                    Chargeur Victron│  Huawei   │
+                                    (état temps réel│ E3372h    │
+                                                   │  4G LTE   │
+                                                   └───────────┘
 ```
 
 #### 📝 Explications
@@ -305,12 +314,23 @@ Permet de remonter dans HA :
 
 Configuration : récupérer la **clé de chiffrement** depuis l'app VictronConnect (Settings → Product Info → Instant Readout → "Show"), à entrer dans le wizard de configuration.
 
+**Modem USB 4G LTE Huawei E3372h-320** :
+
+<p align="center">
+  <img src="docs/images/huawei-e3372h-320.png" alt="Huawei E3372h-320" width="300">
+</p>
+
+LTE Cat4 150 Mbps, bandes 1/3/7/8/20 (800/900/1800/2100/2600 MHz), mode HiLink plug-and-play. Il suffit de le brancher sur un port USB du Pi avec une carte SIM active — il crée une interface Ethernet virtuelle (`eth1`), aucun pilote ni configuration PPP nécessaire.
+
+Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte automatiquement le modem, vérifie la connectivité cellulaire, et route les notifications ntfy.sh à travers la 4G. Interface web HiLink accessible sur `http://192.168.8.1` pour le monitoring signal/état.
+
 #### ✅ Ce que vous obtenez
 
 - **Contrôle distant du secteur** vers la batterie depuis HA
 - **Tests de décharge programmés** : voir la [section blueprint](#-blueprint-test-automatique-de-batterie)
 - **Visibilité complète** sur le chargeur (mode, courant, erreurs)
 - **Mesure de la consommation totale** en kWh via le disjoncteur Tongou (utile pour le calcul d'autonomie réelle)
+- **Notifications même quand tout est coupé** via 4G LTE
 
 ---
 
