@@ -1224,6 +1224,12 @@ def run_wizard(install_dir: str):
             "eco": {"soc_threshold": 99, "global_intensity": speed, "per_device": {}},
         }
 
+    # =================================================================
+    # Step 7 & 8: MQTT + Polling + Save
+    # =================================================================
+    _step7_mqtt(cfg, defaults)
+    _step8_polling_and_save(cfg, defaults, install_dir)
+
 
 def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
     """
@@ -1384,6 +1390,8 @@ def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
     return out
 
 
+def _step7_mqtt(cfg: dict, defaults: dict):
+    """Step 7: MQTT / Home Assistant configuration."""
     # =================================================================
     # Step 7: MQTT / Home Assistant
     # =================================================================
@@ -1448,6 +1456,9 @@ def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
             "device_name": "reef_battery",
         }
 
+
+def _step8_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
+    """Step 8: Polling interval + save configuration."""
     # =================================================================
     # Step 8: Polling interval
     # =================================================================
