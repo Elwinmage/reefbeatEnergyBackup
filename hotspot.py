@@ -54,9 +54,11 @@ class NetworkManager:
         self._hotspot_cfg = cfg.get("hotspot", {})
         self._home_wifi = cfg.get("home_wifi", {})
         self._interface = cfg.get("interface", "wlan0")
+        self._lte_gateway = cfg.get("lte_gateway", {})
         self.mode = NetworkMode.CLIENT
         self._hostapd_conf = "/tmp/reef_hostapd.conf"
         self._dnsmasq_conf = "/tmp/reef_dnsmasq.conf"
+        self._nat_active = False
         self._lock = threading.Lock()
 
     @property
@@ -339,6 +341,11 @@ class NetworkManager:
                 if result.returncode == 0:
                     self.mode = NetworkMode.HOTSPOT
                     print(f"[HOTSPOT] Active: SSID='{ssid}' IP={ip}")
+
+                    # Enable LTE gateway (NAT) if configured
+                    if self._lte_gateway.get("enabled", False):
+                        self._enable_lte_nat()
+
                     return True
                 else:
                     err = result.stderr.decode()
@@ -352,10 +359,14 @@ class NetworkManager:
                 return False
 
     def deactivate_hotspot(self) -> bool:
-        """Stop AP and restore client mode."""
+        """Stop AP, disable NAT, and restore client mode."""
         with self._lock:
             print("[HOTSPOT] Deactivating...")
             try:
+                # Disable NAT first
+                if self._nat_active:
+                    self._disable_lte_nat()
+
                 subprocess.run(
                     ["sudo", "killall", "hostapd"], capture_output=True)
                 subprocess.run(
@@ -381,6 +392,136 @@ class NetworkManager:
                 print(f"[HOTSPOT] Deactivation error: {e}")
                 self.mode = NetworkMode.UNKNOWN
                 return False
+
+    # =========================================================================
+    # LTE NAT gateway — route hotspot traffic through 4G modem
+    # =========================================================================
+
+    def _detect_lte_interface(self) -> Optional[str]:
+        """Find the LTE modem network interface."""
+        # Check configured interface first
+        configured = self._lte_gateway.get("interface", "auto")
+        if configured != "auto":
+            try:
+                result = subprocess.run(
+                    ["ip", "link", "show", configured],
+                    capture_output=True, timeout=3)
+                if result.returncode == 0:
+                    return configured
+            except Exception:
+                pass
+
+        # Auto-detect: look for HiLink gateway in routing table
+        try:
+            result = subprocess.run(
+                ["ip", "route"], capture_output=True, text=True, timeout=5)
+            for line in result.stdout.split("\n"):
+                if "192.168.8.1" in line:
+                    match = re.search(r'dev\s+(\S+)', line)
+                    if match:
+                        return match.group(1)
+        except Exception:
+            pass
+
+        # Fallback: check common interface names
+        for iface in ["eth1", "enx", "usb0", "wwan0"]:
+            try:
+                result = subprocess.run(
+                    ["ip", "link", "show", iface],
+                    capture_output=True, timeout=3)
+                if result.returncode == 0:
+                    return iface
+            except Exception:
+                pass
+
+        return None
+
+    def _enable_lte_nat(self):
+        """
+        Enable NAT routing from hotspot (wlan0) to LTE modem (eth1).
+        
+        This allows ReefBeat devices connected to the RPi hotspot to
+        reach the Red Sea cloud servers via the 4G modem, keeping the
+        mobile app functional even when the home router is down.
+        """
+        lte_iface = self._detect_lte_interface()
+        if not lte_iface:
+            print("[NAT] No LTE interface found, skipping gateway setup")
+            return
+
+        ap_iface = self._interface
+        print(f"[NAT] Enabling gateway: {ap_iface} → {lte_iface}")
+
+        try:
+            # Enable IP forwarding
+            subprocess.run(
+                ["sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"],
+                capture_output=True, check=True)
+
+            # NAT: masquerade outgoing traffic on LTE interface
+            subprocess.run([
+                "sudo", "iptables", "-t", "nat", "-A", "POSTROUTING",
+                "-o", lte_iface, "-j", "MASQUERADE"
+            ], capture_output=True, check=True)
+
+            # Allow forwarding from hotspot to LTE
+            subprocess.run([
+                "sudo", "iptables", "-A", "FORWARD",
+                "-i", ap_iface, "-o", lte_iface, "-j", "ACCEPT"
+            ], capture_output=True, check=True)
+
+            # Allow established/related return traffic
+            subprocess.run([
+                "sudo", "iptables", "-A", "FORWARD",
+                "-i", lte_iface, "-o", ap_iface,
+                "-m", "state", "--state", "RELATED,ESTABLISHED",
+                "-j", "ACCEPT"
+            ], capture_output=True, check=True)
+
+            self._nat_active = True
+            self._nat_lte_iface = lte_iface
+            print(f"[NAT] Gateway active: ReefBeat devices can reach "
+                  f"the internet via 4G ({lte_iface})")
+
+        except subprocess.CalledProcessError as e:
+            print(f"[NAT] Failed to enable: {e}")
+        except Exception as e:
+            print(f"[NAT] Error: {e}")
+
+    def _disable_lte_nat(self):
+        """Remove NAT rules and disable IP forwarding."""
+        lte_iface = getattr(self, '_nat_lte_iface', None)
+        ap_iface = self._interface
+
+        print("[NAT] Disabling gateway...")
+        try:
+            if lte_iface:
+                # Remove specific rules
+                subprocess.run([
+                    "sudo", "iptables", "-t", "nat", "-D", "POSTROUTING",
+                    "-o", lte_iface, "-j", "MASQUERADE"
+                ], capture_output=True)
+                subprocess.run([
+                    "sudo", "iptables", "-D", "FORWARD",
+                    "-i", ap_iface, "-o", lte_iface, "-j", "ACCEPT"
+                ], capture_output=True)
+                subprocess.run([
+                    "sudo", "iptables", "-D", "FORWARD",
+                    "-i", lte_iface, "-o", ap_iface,
+                    "-m", "state", "--state", "RELATED,ESTABLISHED",
+                    "-j", "ACCEPT"
+                ], capture_output=True)
+
+            # Disable IP forwarding
+            subprocess.run(
+                ["sudo", "sysctl", "-w", "net.ipv4.ip_forward=0"],
+                capture_output=True)
+
+            self._nat_active = False
+            print("[NAT] Gateway disabled")
+
+        except Exception as e:
+            print(f"[NAT] Cleanup error: {e}")
 
     # =========================================================================
     # 3-level failover orchestration

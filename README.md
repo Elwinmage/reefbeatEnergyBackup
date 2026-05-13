@@ -14,6 +14,7 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **Per-device control** — each ReefWave / ReefRun / Skimmer gets its own intensity per level
 - **3-level network failover** — normal Wi-Fi → rejoin → autonomous hotspot
 - **Push notifications** — via [ntfy.sh](https://ntfy.sh) (free, no account required) + 4G LTE failover
+- **4G internet gateway** — when hotspot is active, routes ReefBeat traffic through 4G so the Red Sea mobile app keeps working
 - **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
 - **MQTT buffer with replay** — data during HA outage is never lost
 - **Auto-detection** — scans your network for ReefBeat devices during setup
@@ -355,6 +356,8 @@ LTE Cat4 150 Mbps, bands 1/3/7/8/20 (800/900/1800/2100/2600 MHz), plug-and-play 
 
 When Wi-Fi and home router are both down, the notifier automatically detects the modem, checks cellular connectivity, and routes ntfy.sh notifications through 4G. HiLink web interface available at `http://192.168.8.1` for signal/status monitoring.
 
+**4G internet gateway for ReefBeat devices**: when the RPi hotspot is active and this option is enabled, the RPi acts as a NAT router — it forwards internet traffic from the ReefBeat devices (connected to the hotspot) through the 4G modem. This means the **Red Sea mobile app keeps working** during a power outage, as the ReefBeat controllers can still reach the Red Sea cloud servers.
+
 #### ✅ What you get
 
 - **Remote mains control** to the battery from HA
@@ -362,6 +365,7 @@ When Wi-Fi and home router are both down, the notifier automatically detects the
 - **Full charger visibility** (mode, current, errors)
 - **Total consumption measurement** in kWh via the Tongou breaker
 - **Notifications even when everything is down** via 4G LTE
+- **Red Sea mobile app keeps working** during outages (4G gateway routes ReefBeat traffic to the cloud)
 
 ---
 

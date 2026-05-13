@@ -1700,8 +1700,8 @@ def _step8_notifications(cfg: dict, defaults: dict):
         "If Wi-Fi is down, notifications can be sent through"
     ))
     info(t(
-        "une clé USB 4G (Huawei E3372h recommandée).",
-        "a USB 4G modem (Huawei E3372h recommended)."
+        "une clé USB 4G (Huawei E3372h-320 recommandée).",
+        "a USB 4G modem (Huawei E3372h-320 recommended)."
     ))
     print()
 
@@ -1709,6 +1709,7 @@ def _step8_notifications(cfg: dict, defaults: dict):
 
     # Auto-detect USB modem
     lte_detected = False
+    lte_interface = None
     try:
         import subprocess
         result = subprocess.run(
@@ -1717,6 +1718,19 @@ def _step8_notifications(cfg: dict, defaults: dict):
         if "Huawei" in result.stdout or "12d1:" in result.stdout:
             ok(t("Modem USB Huawei détecté !", "Huawei USB modem detected!"))
             lte_detected = True
+
+            # Find the network interface
+            ip_result = subprocess.run(
+                ["ip", "route"], capture_output=True, text=True, timeout=5
+            )
+            for line in ip_result.stdout.split("\n"):
+                if "192.168.8.1" in line:
+                    import re as _re
+                    m = _re.search(r'dev\s+(\S+)', line)
+                    if m:
+                        lte_interface = m.group(1)
+                        info(t(f"Interface réseau : {lte_interface}",
+                               f"Network interface: {lte_interface}"))
         else:
             info(t("Aucun modem USB 4G détecté.", "No USB 4G modem detected."))
     except Exception:
@@ -1727,15 +1741,251 @@ def _step8_notifications(cfg: dict, defaults: dict):
         default=lte_detected or default_lte.get("enabled", False)
     )
 
-    if use_lte and not lte_detected:
-        info(t(
-            "Branchez une clé Huawei E3372h avec une carte SIM active.",
-            "Plug in a Huawei E3372h dongle with an active SIM card."
-        ))
-        info(t(
-            "Le modem sera détecté automatiquement au démarrage du service.",
-            "The modem will be detected automatically when the service starts."
-        ))
+    if use_lte:
+        if not lte_detected:
+            info(t(
+                "Branchez une clé Huawei E3372h-320 avec une carte SIM active.",
+                "Plug in a Huawei E3372h-320 dongle with an active SIM card."
+            ))
+            info(t(
+                "Le modem sera détecté automatiquement au démarrage du service.",
+                "The modem will be detected automatically when the service starts."
+            ))
+        else:
+            # --- SIM PIN check ---
+            print()
+            info(t("Vérification de l'état de la carte SIM...",
+                   "Checking SIM card status..."))
+
+            sim_ready = False
+            HILINK = "http://192.168.8.1"
+
+            def _hilink_get_token(session):
+                """Get a fresh CSRF token from the HiLink API."""
+                try:
+                    r = session.get(f"{HILINK}/api/webserver/SesTokInfo", timeout=5)
+                    if r.status_code == 200:
+                        import re as _re_tok
+                        ses = _re_tok.search(r'<SesInfo>(.+?)</SesInfo>', r.text)
+                        tok = _re_tok.search(r'<TokInfo>(.+?)</TokInfo>', r.text)
+                        if ses and tok:
+                            session.headers.update({
+                                "Cookie": ses.group(1),
+                                "__RequestVerificationToken": tok.group(1),
+                            })
+                            return tok.group(1)
+                except Exception:
+                    pass
+                return ""
+
+            try:
+                import requests as req
+
+                # Create a session and get CSRF token first
+                session = req.Session()
+                token = _hilink_get_token(session)
+
+                if not token:
+                    warn(t("Impossible d'obtenir un token de session HiLink.",
+                           "Cannot get HiLink session token."))
+                    info(t("Vérifiez que le modem est accessible sur 192.168.8.1",
+                           "Check that the modem is reachable at 192.168.8.1"))
+                else:
+                    # Now check SIM status with valid session
+                    r = session.get(f"{HILINK}/api/pin/status", timeout=5)
+                    if r.status_code == 200 and "<error>" not in r.text:
+                        sim_state = r.text
+                        if "<SimState>257</SimState>" in sim_state:
+                            ok(t("Carte SIM prête (pas de PIN requis)",
+                                 "SIM card ready (no PIN required)"))
+                            sim_ready = True
+                        elif "<SimState>260</SimState>" in sim_state:
+                            warn(t("La carte SIM nécessite un code PIN.",
+                                   "The SIM card requires a PIN code."))
+
+                            pin_attempts = 0
+                            max_attempts = 3
+                            while not sim_ready and pin_attempts < max_attempts:
+                                pin_attempts += 1
+                                remaining = max_attempts - pin_attempts
+                                sim_pin = ask(
+                                    t(f"Code PIN de la carte SIM (4 chiffres, {remaining + 1} essai(s) restant(s))",
+                                      f"SIM card PIN code (4 digits, {remaining + 1} attempt(s) left)")
+                                )
+
+                                if not sim_pin:
+                                    break
+
+                                # Refresh token before each POST
+                                _hilink_get_token(session)
+
+                                pin_xml = (
+                                    '<?xml version="1.0" encoding="UTF-8"?>'
+                                    '<request>'
+                                    f'<CurrentPin>{sim_pin}</CurrentPin>'
+                                    '<PinOperation>0</PinOperation>'
+                                    '</request>'
+                                )
+                                session.headers["Content-Type"] = "application/xml"
+                                pin_r = session.post(
+                                    f"{HILINK}/api/pin/operate",
+                                    data=pin_xml, timeout=10
+                                )
+                                if pin_r.status_code == 200 and "<response>OK</response>" in pin_r.text:
+                                    ok(t("PIN accepté, SIM déverrouillée",
+                                         "PIN accepted, SIM unlocked"))
+                                    sim_ready = True
+                                    import time as _time
+                                    info(t("Attente de la connexion au réseau...",
+                                           "Waiting for network connection..."))
+                                    _time.sleep(10)
+                                elif pin_r.status_code == 200 and "<error>" in pin_r.text:
+                                    import re as _re_err
+                                    code = _re_err.search(r'<code>(\d+)</code>', pin_r.text)
+                                    err_code = code.group(1) if code else "?"
+                                    if err_code == "125004":
+                                        fail(t(
+                                            "SIM bloquée (PUK requis) ! Utilisez un téléphone pour la débloquer.",
+                                            "SIM locked (PUK required)! Use a phone to unlock it."
+                                        ))
+                                        break
+                                    else:
+                                        warn(t(f"PIN incorrect ou erreur (code {err_code}).",
+                                               f"Incorrect PIN or error (code {err_code})."))
+                                        if remaining > 0:
+                                            info(t(f"Attention : {remaining} essai(s) restant(s) avant blocage PUK.",
+                                                   f"Warning: {remaining} attempt(s) left before PUK lock."))
+                                            retry = ask_yes_no(
+                                                t("Réessayer ?", "Retry?"),
+                                                default=True
+                                            )
+                                            if not retry:
+                                                break
+                                        else:
+                                            fail(t("Nombre maximum de tentatives atteint.",
+                                                   "Maximum attempts reached."))
+                                else:
+                                    warn(t("Réponse inattendue du modem.",
+                                           "Unexpected modem response."))
+                                    retry = ask_yes_no(
+                                        t("Réessayer ?", "Retry?"),
+                                        default=True
+                                    )
+                                    if not retry:
+                                        break
+
+                            if not sim_ready:
+                                info(t(
+                                    "Le failover 4G sera configuré mais la SIM n'est pas déverrouillée.",
+                                    "4G failover will be configured but the SIM is not unlocked."
+                                ))
+                                info(t(
+                                    "Déverrouillez-la manuellement via http://192.168.8.1 ou désactivez le PIN.",
+                                    "Unlock it manually via http://192.168.8.1 or disable the PIN."
+                                ))
+                        elif "<SimState>255</SimState>" in sim_state:
+                            fail(t("Aucune carte SIM détectée dans le modem.",
+                                   "No SIM card detected in the modem."))
+                        elif "<SimState>256</SimState>" in sim_state:
+                            warn(t("Carte SIM invalide ou non reconnue.",
+                                   "Invalid or unrecognized SIM card."))
+                        else:
+                            # Extract SimState value for debug
+                            import re as _re_sim
+                            ss = _re_sim.search(r'<SimState>(\d+)</SimState>', sim_state)
+                            state_val = ss.group(1) if ss else "?"
+                            info(t(f"État SIM: {state_val}",
+                                   f"SIM state: {state_val}"))
+                    elif r.status_code == 200 and "<error>" in r.text:
+                        # API returned error even with token — try without auth
+                        import re as _re_code
+                        ec = _re_code.search(r'<code>(\d+)</code>', r.text)
+                        warn(t(f"Erreur API HiLink (code {ec.group(1) if ec else '?'})",
+                               f"HiLink API error (code {ec.group(1) if ec else '?'})"))
+                        info(t("Essayez d'accéder à http://192.168.8.1 depuis un navigateur.",
+                               "Try accessing http://192.168.8.1 from a browser."))
+                    else:
+                        warn(t("Impossible de vérifier l'état de la SIM.",
+                               "Cannot check SIM status."))
+            except Exception as e:
+                warn(t(f"Erreur HiLink API: {e}",
+                       f"HiLink API error: {e}"))
+
+            # --- Connectivity test ---
+            if sim_ready or lte_interface:
+                print()
+                info(t("Test de connectivité 4G...", "Testing 4G connectivity..."))
+                iface = lte_interface or "eth1"
+                try:
+                    ping_result = subprocess.run(
+                        ["ping", "-c", "2", "-W", "3", "-I", iface, "8.8.8.8"],
+                        capture_output=True, timeout=10
+                    )
+                    if ping_result.returncode == 0:
+                        ok(t("Connexion 4G fonctionnelle !",
+                             "4G connection working!"))
+
+                        # --- ntfy via 4G test ---
+                        print()
+                        test_lte = ask_yes_no(
+                            t("Tester l'envoi d'une notification via 4G ?",
+                              "Test sending a notification via 4G?"),
+                            default=True
+                        )
+
+                        while test_lte:
+                            info(t("Envoi via 4G...", "Sending via 4G..."))
+                            try:
+                                lte_result = subprocess.run([
+                                    "curl", "-s", "--max-time", "15",
+                                    "--interface", iface,
+                                    "-H", "Title: reefbeat Backup -- Test 4G",
+                                    "-H", "Priority: default",
+                                    "-H", "Tags: satellite,zap",
+                                    "-d", "Test notification via 4G LTE -- OK!",
+                                    f"{ntfy_server}/{ntfy_topic}"
+                                ], capture_output=True, timeout=20)
+
+                                if lte_result.returncode == 0:
+                                    ok(t("Notification envoyée via 4G !",
+                                         "Notification sent via 4G!"))
+
+                                    received = ask_yes_no(
+                                        t("Avez-vous recu la notification ?",
+                                          "Did you receive the notification?"),
+                                        default=True
+                                    )
+                                    if received:
+                                        ok(t("Failover 4G validé !",
+                                             "4G failover validated!"))
+                                        break
+                                    else:
+                                        warn(t("Notification non recue via 4G.",
+                                               "Notification not received via 4G."))
+                                        test_lte = ask_yes_no(
+                                            t("Réessayer ?", "Retry?"),
+                                            default=True
+                                        )
+                                else:
+                                    warn(t(f"Échec curl: {lte_result.stderr.decode()[:100]}",
+                                           f"curl failed: {lte_result.stderr.decode()[:100]}"))
+                                    test_lte = ask_yes_no(
+                                        t("Réessayer ?", "Retry?"),
+                                        default=True
+                                    )
+                            except Exception as e:
+                                warn(t(f"Erreur: {e}", f"Error: {e}"))
+                                test_lte = ask_yes_no(
+                                    t("Réessayer ?", "Retry?"),
+                                    default=True
+                                )
+                    else:
+                        warn(t("Pas de connectivité 4G (ping échoué).",
+                               "No 4G connectivity (ping failed)."))
+                        info(t("Vérifiez que la carte SIM a un forfait data actif.",
+                               "Check that the SIM card has an active data plan."))
+                except Exception as e:
+                    warn(t(f"Erreur ping: {e}", f"Ping error: {e}"))
 
     # --- Cooldown ---
     print()
@@ -1746,7 +1996,49 @@ def _step8_notifications(cfg: dict, defaults: dict):
         min_val=30, max_val=3600
     )
 
-    # --- Save ---
+    # --- LTE Gateway (NAT routing for ReefBeat cloud access) ---
+    use_lte_gateway = False
+    if use_lte:
+        print()
+        section(t("8c. Passerelle internet 4G pour les ReefBeat",
+                   "8c. 4G internet gateway for ReefBeat devices"))
+
+        info(t(
+            "Quand le hotspot est actif, les ReefBeat perdent leur accès",
+            "When the hotspot is active, ReefBeat devices lose their internet"
+        ))
+        info(t(
+            "internet (et donc l'app mobile Red Sea ne fonctionne plus).",
+            "access (so the Red Sea mobile app stops working)."
+        ))
+        info(t(
+            "En activant la passerelle 4G, le RPi route le trafic internet",
+            "By enabling the 4G gateway, the RPi routes internet traffic"
+        ))
+        info(t(
+            "des ReefBeat à travers le modem USB 4G via NAT.",
+            "from ReefBeat devices through the USB 4G modem via NAT."
+        ))
+        info(t(
+            "→ L'app mobile Red Sea continue de fonctionner pendant la coupure !",
+            "→ The Red Sea mobile app keeps working during an outage!"
+        ))
+        print()
+
+        default_gw = defaults.get("network", {}).get("lte_gateway", {})
+        use_lte_gateway = ask_yes_no(
+            t("Activer la passerelle internet 4G pour les ReefBeat ?",
+              "Enable 4G internet gateway for ReefBeat devices?"),
+            default=default_gw.get("enabled", True)
+        )
+
+        if use_lte_gateway:
+            ok(t(
+                "Les ReefBeat auront accès au cloud Red Sea via la 4G quand le hotspot est actif.",
+                "ReefBeat devices will access Red Sea cloud via 4G when the hotspot is active."
+            ))
+
+    # --- Save notifications ---
     cfg["notifications"] = {
         "enabled": True,
         "provider": "ntfy",
@@ -1763,6 +2055,14 @@ def _step8_notifications(cfg: dict, defaults: dict):
             "check_url": "http://192.168.8.1/api/monitoring/status",
         },
         "cooldown_s": cooldown,
+    }
+
+    # Save LTE gateway in network config
+    if "network" not in cfg:
+        cfg["network"] = {}
+    cfg["network"]["lte_gateway"] = {
+        "enabled": use_lte_gateway,
+        "interface": "auto",
     }
 
     ok(t("Notifications configurées", "Notifications configured"))

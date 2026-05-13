@@ -324,6 +324,8 @@ LTE Cat4 150 Mbps, bandes 1/3/7/8/20 (800/900/1800/2100/2600 MHz), mode HiLink p
 
 Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte automatiquement le modem, vérifie la connectivité cellulaire, et route les notifications ntfy.sh à travers la 4G. Interface web HiLink accessible sur `http://192.168.8.1` pour le monitoring signal/état.
 
+**Passerelle internet 4G pour les ReefBeat** : quand le hotspot RPi est actif et cette option activée, le RPi fait office de routeur NAT — il redirige le trafic internet des ReefBeat (connectés au hotspot) à travers le modem 4G. Résultat : **l'app mobile Red Sea continue de fonctionner** pendant une coupure, car les contrôleurs ReefBeat accèdent toujours aux serveurs cloud Red Sea.
+
 #### ✅ Ce que vous obtenez
 
 - **Contrôle distant du secteur** vers la batterie depuis HA
@@ -331,6 +333,7 @@ Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte autom
 - **Visibilité complète** sur le chargeur (mode, courant, erreurs)
 - **Mesure de la consommation totale** en kWh via le disjoncteur Tongou (utile pour le calcul d'autonomie réelle)
 - **Notifications même quand tout est coupé** via 4G LTE
+- **L'app mobile Red Sea continue de fonctionner** pendant les coupures (la passerelle 4G route le trafic ReefBeat vers le cloud)
 
 ---
 

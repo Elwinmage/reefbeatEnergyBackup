@@ -94,6 +94,11 @@
             "dhcp_end": "192.168.4.50",
             "channel": 6,
             "controller_mac_ips": {}
+        },
+
+        "lte_gateway": {
+            "enabled": false,
+            "interface": "auto"
         }
     },
 
