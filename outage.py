@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional, Callable
 
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import DigitalInputDevice
     RPI_AVAILABLE = True
 except ImportError:
     RPI_AVAILABLE = False
@@ -45,73 +45,60 @@ class OutageDetector:
 # =============================================================================
 # Relay-based detection (Finder 40.61.8.230.4000)
 # =============================================================================
+# On définit l'Enum PowerState pour que la comparaison
+# detector.state == PowerState.BATTERY fonctionne
+class PowerState(Enum):
+    MAINS = 0    # Secteur
+    BATTERY = 1  # Batterie
 
-class RelayDetector(OutageDetector):
-    """
-    Detects outage via 230V relay NO contact on GPIO.
-    
-    Wiring:
-      - Relay coil (A1/A2): Phase + Neutral from 230V mains
-      - Relay NO contact: one side to GPIO pin, other to GND
-      - 10k pull-up resistor between GPIO pin and 3.3V
-      
-    Logic (active_low, default):
-      - Mains OK  -> coil energized -> NO closed -> GPIO LOW
-      - Power out -> coil drops    -> NO open   -> GPIO HIGH (pull-up)
-    
-    Logic (active_high):
-      - Inverted: uses NC contact instead of NO
-    """
+class RelayDetector:
+    def __init__(self, config):
+        self._pin = config.get("gpio_pin", 17)
+        self._debounce = config.get("debounce_ms", 200) / 1000.0
+        
+        # Initialisation de l'entrée
+        self._device = DigitalInputDevice(
+            self._pin, 
+            pull_up=True, 
+            bounce_time=self._debounce
+        )
 
-    def __init__(self, cfg: dict):
-        super().__init__()
-        self._pin = cfg.get("gpio_pin", 17)
-        self._debounce_ms = cfg.get("debounce_ms", 200)
-        self._active_low = cfg.get("logic", "active_low") == "active_low"
-        self._last_change = 0.0
+        self._callback = None
 
-        if RPI_AVAILABLE:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self._pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            self.state = self._read()
-            GPIO.add_event_detect(
-                self._pin, GPIO.BOTH,
-                callback=self._on_edge,
-                bouncetime=self._debounce_ms,
-            )
-            print(f"[RELAY] GPIO{self._pin} ready, state: {self.state.value}")
+        # Callbacks de gpiozero
+        self._device.when_activated = self._internal_handler
+        self._device.when_deactivated = self._internal_handler
+        
+        print(f"[OUTAGE] RelayDetector initialisé sur BCM {self._pin}")
+
+    @property
+    def state(self):
+        """
+        Cette propriété permet à main.py de faire 'detector.state'.
+        Elle renvoie PowerState.BATTERY si le courant est coupé.
+        """
+        # Si .is_active est False, le relais indique une coupure (selon ton câblage)
+        if not self._device.is_active:
+            return PowerState.MAINS
         else:
-            print("[RELAY] GPIO unavailable, assuming mains")
+            return PowerState.BATTERY
 
-    def _read(self) -> PowerState:
-        """Read current state from GPIO pin."""
-        pin_high = GPIO.input(self._pin) == GPIO.HIGH
-        if self._active_low:
-            # Active low: HIGH = outage (relay open)
-            return PowerState.BATTERY if pin_high else PowerState.MAINS
-        else:
-            # Active high: LOW = outage
-            return PowerState.MAINS if pin_high else PowerState.BATTERY
+    def on_change(self, callback_func):
+        """Enregistre la fonction à appeler lors d'un changement d'état"""
+        self._callback = callback_func
 
-    def _on_edge(self, channel):
-        """GPIO interrupt callback with debounce."""
-        now = time.monotonic()
-        if now - self._last_change < self._debounce_ms / 1000.0:
-            return
-        self._last_change = now
+    def read(self):
+        """Renvoie True si coupure, False si secteur"""
+        return self.state == PowerState.BATTERY
 
-        new = self._read()
-        if new != self.state:
-            old = self.state
-            self.state = new
-            print(f"[RELAY] {old.value} -> {new.value}")
-            self._notify(old, new)
+    def _internal_handler(self):
+        """Déclenché par le changement physique du signal"""
+        if self._callback:
+            # On passe le nouvel état à la fonction de rappel
+            self._callback(self.read())
 
     def cleanup(self):
-        if RPI_AVAILABLE:
-            GPIO.cleanup(self._pin)
-            print("[RELAY] GPIO cleaned up")
-
+        self._device.close()
 
 # =============================================================================
 # Monitor-based detection (from INA226 or Victron current reading)
