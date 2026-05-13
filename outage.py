@@ -47,10 +47,6 @@ class OutageDetector:
 # =============================================================================
 # On définit l'Enum PowerState pour que la comparaison
 # detector.state == PowerState.BATTERY fonctionne
-class PowerState(Enum):
-    MAINS = 0    # Secteur
-    BATTERY = 1  # Batterie
-
 class RelayDetector:
     def __init__(self, config):
         self._pin = config.get("gpio_pin", 17)
@@ -93,9 +89,12 @@ class RelayDetector:
 
     def _internal_handler(self):
         """Déclenché par le changement physique du signal"""
-        if self._callback:
-            # On passe le nouvel état à la fonction de rappel
-            self._callback(self.read())
+        new_state = self.state
+        if self._callback and new_state != self._last_state:
+            old_state = self._last_state
+            self._last_state = new_state
+            # On envoie (old, new) pour correspondre à la signature OutageDetector
+            self._callback(old_state, new_state)
 
     def cleanup(self):
         self._device.close()
