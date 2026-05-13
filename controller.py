@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any
 
 from outage import PowerState
 from hotspot import NetworkManager, NetworkMode
+from notifier import Notifier
 
 try:
     import requests
@@ -701,9 +702,11 @@ class OutageManager:
     """
 
     def __init__(self, pump: PumpController,
-                 network: NetworkManager, cfg: dict):
+                 network: NetworkManager, cfg: dict,
+                 notifier: "Notifier" = None):
         self._pump = pump
         self._network = network
+        self._notifier = notifier
         self._cfg = cfg
         self._pump_cfg = cfg.get("pump_control", {})
         self._failover_cfg = cfg.get("network", {}).get("failover", {})
@@ -720,6 +723,10 @@ class OutageManager:
         if new == PowerState.BATTERY:
             self.outage_start = time.monotonic()
             print("[OUTAGE] === POWER OUTAGE DETECTED ===")
+            if self._notifier:
+                capacity = self._cfg.get("battery", {}).get("capacity_ah", 60)
+                runtime = (self.soc / 100 * capacity) / 4.0 if self.soc > 0 else 0
+                self._notifier.notify_outage(self.soc, runtime)
             self._stop_failover.clear()
             self._failover_thread = threading.Thread(
                 target=self._failover_sequence, daemon=True
@@ -732,6 +739,8 @@ class OutageManager:
                 duration = (time.monotonic() - self.outage_start) / 60.0
             self.outage_start = None
             print(f"[OUTAGE] === POWER RESTORED ({duration:.1f} min) ===")
+            if self._notifier:
+                self._notifier.notify_power_restored(duration, self.soc)
 
             # Stop failover
             self._stop_failover.set()
@@ -765,6 +774,10 @@ class OutageManager:
         else:
             print("[FAILOVER] Some controllers may be unreachable")
 
+        # Notify about network failover mode
+        if self._notifier and self._network.mode.value != "client":
+            self._notifier.notify_network_failover(self._network.mode.value)
+
         # Apply battery level based on current SoC
         self._pump.apply_level(
             self.soc, on_battery=True, reason="outage_initial"
@@ -777,12 +790,26 @@ class OutageManager:
             if self._stop_failover.wait(timeout=check_interval):
                 return
 
-    def update_soc(self, soc: float):
+    def update_soc(self, soc: float, runtime_h: float = -1):
         """Update SoC and adjust pump levels if on battery."""
         old_soc = self.soc
         self.soc = soc
         if self.power_state == PowerState.BATTERY:
+            old_level = self._pump.active_level_name
             self._pump.apply_level(soc, on_battery=True)
+            new_level = self._pump.active_level_name
+
+            # Notify on level change
+            if self._notifier and new_level != old_level and new_level != "normal":
+                self._notifier.notify_level_change(new_level, soc, runtime_h)
+
+            # Notify on critical SoC (repeated)
+            critical_threshold = (self._cfg.get("pump_control", {})
+                                  .get("levels", {})
+                                  .get("critical", {})
+                                  .get("soc_threshold", 15))
+            if self._notifier and soc <= critical_threshold:
+                self._notifier.notify_soc_critical(soc, runtime_h)
 
     def get_status(self) -> dict:
         outage_min = 0.0

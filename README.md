@@ -11,6 +11,8 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **Progressive pump intensity** — configurable SoC-based levels (eco → survival → critical)
 - **Per-device control** — set individual speeds for each ReefWave/ReefRun/ReefLED
 - **3-level network failover** — direct reach → Wi-Fi rejoin → mirror hotspot
+- **Push notifications** — via [ntfy.sh](https://ntfy.sh) (free, no account required)
+- **4G LTE failover** — send alerts via USB modem (Huawei E3372) when Wi-Fi is down
 - **Home Assistant integration** — MQTT auto-discovery with 10 sensors
 - **Auto-detection** — scans your network for ReefBeat devices during setup
 - **Bilingual** — French/English interface based on system locale
@@ -70,9 +72,10 @@ monitor.py              Battery backends (INA226 / Victron BLE)
 outage.py               Outage detection (relay GPIO / current monitor)
 hotspot.py              3-level network failover manager
 controller.py           Pump intensity control + outage orchestration
+notifier.py             Push notifications (ntfy.sh + 4G LTE failover)
+test_notif.py           CLI notification tester
 ble_scan.py             Victron BLE device scanner
 setup.py                Dependency installer + hardware checker
-reef-battery-monitor.service    Systemd service file
 ```
 
 ## 🔧 Hardware
@@ -114,6 +117,69 @@ Mains 230V → LiFePO4 24V Charger → Battery 24V → ReefWave / ReefRun / Skim
                                     INA226 (monitoring)
 ```
 
+## 📱 Push notifications (ntfy.sh)
+
+Receive alerts directly on your phone without Home Assistant, using the free [ntfy.sh](https://ntfy.sh) service.
+
+**Setup:**
+1. Install the ntfy app ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/app/ntfy/id1625396347))
+2. Subscribe to your topic (e.g. `reefbeat-myreef-secret`)
+3. Configure in `config.json` or via the wizard
+
+**Notification events:**
+- ⚡ Power outage detected (with SoC and estimated runtime)
+- ✅ Power restored (with outage duration)
+- 🟡🟠🔴 Pump level changes (eco → survival → critical)
+- 🚨 Battery critically low (repeated alerts)
+- 📡 Network failover status
+
+**Priorities:** outage = `high` (sound), critical = `urgent` (alarm), info = `default` (silent)
+
+**Test from the command line:**
+
+```bash
+# Simple test
+python3 test_notif.py
+
+# Simulate specific alerts
+python3 test_notif.py --type outage       # Power outage
+python3 test_notif.py --type restored     # Power restored
+python3 test_notif.py --type critical     # Critical battery (alarm)
+python3 test_notif.py --type level        # Level change
+python3 test_notif.py --type network      # Network failover
+
+# Custom message
+python3 test_notif.py --message "Hello from RPi"
+
+# Force send via 4G LTE modem
+python3 test_notif.py --type outage --lte
+
+# Override priority
+python3 test_notif.py --type test --priority urgent
+```
+
+Notifications are only sent automatically when a power outage is detected. On mains power, no notifications are sent (use `test_notif.py` for manual tests).
+
+## 📶 4G LTE failover
+
+When Wi-Fi and home router are down, notifications can be sent via a USB 4G modem.
+
+**Recommended hardware:** [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) (~40€)
+
+<p align="center">
+  <img src="docs/images/huawei-e3372h-320.png" alt="Huawei E3372h-320" width="300">
+</p>
+
+LTE Cat4 150 Mbps download, bands 1/3/7/8/20 (800/900/1800/2100/2600 MHz), plug-and-play HiLink mode.
+
+The E3372h creates a virtual Ethernet interface (`eth1`) on the RPi — no driver or PPP configuration needed. Just plug it in with an active SIM card.
+
+**How it works:**
+1. Normal: notifications sent via Wi-Fi
+2. Wi-Fi down: notifier detects failure, switches to LTE interface
+3. Sends via `curl --interface eth1` to force traffic through the modem
+4. HiLink web interface available at `http://192.168.8.1` for status/signal monitoring
+
 ## 🏠 Home Assistant sensors
 
 | Entity | Description |
@@ -129,6 +195,35 @@ Mains 230V → LiFePO4 24V Charger → Battery 24V → ReefWave / ReefRun / Skim
 | `sensor.reef_battery_outage_duration` | Outage duration (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 / victron |
+
+## ⏱ Runtime estimate
+
+The `runtime_h` sensor always shows the estimated autonomy — "if power cuts now, how long will the battery last?"
+
+- **On battery:** calculated from real measured current (INA226), averaged over a sliding window.
+- **On mains:** calculated from theoretical pump consumption at current intensity level, using the power tables from `power_estimation.py`.
+
+## 🔧 CLI tools
+
+| Command | Description |
+|---------|-------------|
+| `python3 configure.py` | Reconfigure (re-run the wizard) |
+| `python3 test_notif.py` | Test push notifications |
+| `python3 ble_scan.py` | Scan for Victron BLE devices |
+| `python3 setup.py --check` | Verify dependencies and hardware |
+
+## ⚠ Migration from older versions
+
+If you previously installed as `reef-battery-monitor`, remove the old service:
+
+```bash
+sudo systemctl stop reef-battery-monitor
+sudo systemctl disable reef-battery-monitor
+sudo rm /etc/systemd/system/reef-battery-monitor.service
+sudo systemctl daemon-reload
+```
+
+The new service is called `reefbeat-energy-backup` and is managed by the installer.
 
 ## 📜 License
 

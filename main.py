@@ -24,6 +24,7 @@ from outage import create_outage_detector, PowerState
 from hotspot import NetworkManager
 from controller import PumpController, OutageManager
 from mqtt_buffer import MqttBuffer
+from notifier import create_notifier
 
 
 # =============================================================================
@@ -249,8 +250,11 @@ def main():
     # --- Pump controller ---
     pump = PumpController(mqtt_client, cfg)
 
+    # --- Notifier (ntfy.sh + LTE failover) ---
+    notifier = create_notifier(cfg)
+
     # --- Outage manager ---
-    outage_mgr = OutageManager(pump, network, cfg)
+    outage_mgr = OutageManager(pump, network, cfg, notifier=notifier)
 
     # --- Outage detector ---
     detector = create_outage_detector(cfg)
@@ -321,30 +325,46 @@ def main():
             if isinstance(detector, MonitorDetector):
                 detector.update(reading.current)
 
-            # Update SoC
-            outage_mgr.update_soc(reading.soc)
-            status = outage_mgr.get_status()
-
             # Runtime estimate.
             #
-            # Only meaningful when actually running on battery: when the
-            # mains is up, the INA226 mostly sees charger noise (a few
-            # hundred mA either way) so any "remaining hours" computed
-            # from that current is misleading.
-            #
-            # On battery, we average the current over a sliding window
-            # to wash out measurement jitter, and require a minimum
-            # average draw of 0.2 A before computing -- below that, the
-            # noise floor dominates and the result would be hours of
-            # noise rather than a real autonomy estimate.
+            # Two modes:
+            # - On battery: use real measured current (averaged over a
+            #   sliding window to smooth INA226 jitter).
+            # - On mains: use theoretical consumption from pump power
+            #   tables so the user always sees "if power cuts now, I
+            #   have ~Xh". This is based on the current pump intensity
+            #   level (normal @ 100%).
             current_history.append(reading.current)
-            runtime_h = -1.0
-            if status["power_state"] == "battery":
+            runtime_h = None
+
+            capacity = cfg.get("battery", {}).get("capacity_ah", 60.0)
+            remaining_ah = (reading.soc / 100.0) * capacity
+
+            if outage_mgr.power_state == PowerState.BATTERY:
+                # Real measurement: average current over sliding window
                 avg_current = sum(current_history) / len(current_history)
                 if avg_current > 0.2:
-                    capacity = cfg.get("battery", {}).get("capacity_ah", 60.0)
-                    remaining = (reading.soc / 100.0) * capacity
-                    runtime_h = round(remaining / avg_current, 1)
+                    runtime_h = round(remaining_ah / avg_current, 1)
+            else:
+                # Theoretical: estimate from power tables
+                try:
+                    from power_estimation import device_power_at
+                    total_watts = 0.0
+                    for ctrl in cfg.get("pump_control", {}).get("controllers", []):
+                        pump_model = ctrl.get("pump_model", "")
+                        total_watts += device_power_at(pump_model, 100)
+                    # Add RPi consumption (~3.5W)
+                    total_watts += 3.5
+                    if total_watts > 0:
+                        nominal_voltage = 25.6  # LiFePO4 24V nominal
+                        estimated_current = total_watts / nominal_voltage
+                        runtime_h = round(remaining_ah / estimated_current, 1)
+                except Exception:
+                    pass  # power_estimation not available, skip
+
+            # Update SoC (may trigger notifications via notifier)
+            outage_mgr.update_soc(reading.soc, runtime_h=runtime_h if runtime_h else -1.0)
+            status = outage_mgr.get_status()
 
             # State payload
             data = {
@@ -391,7 +411,7 @@ def main():
                 f"{reading.power:5.1f}W | SoC {reading.soc:4.1f}% | "
                 f"Pumps {status['pump_intensity']:3d}%"
             )
-            if runtime_h > 0:
+            if runtime_h is not None and runtime_h > 0:
                 line += f" | ~{runtime_h}h"
             if status["outage_duration_min"] > 0:
                 line += f" | outage {status['outage_duration_min']}min"

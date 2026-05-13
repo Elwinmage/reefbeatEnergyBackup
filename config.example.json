@@ -97,5 +97,26 @@
         }
     },
 
-    "poll_interval_s": 5.0
+    "poll_interval_s": 5.0,
+
+    "notifications": {
+        "enabled": false,
+        "provider": "ntfy",
+
+        "ntfy": {
+            "server": "https://ntfy.sh",
+            "topic": "reefbeat-CHANGE-ME",
+            "priority_outage": "high",
+            "priority_critical": "urgent",
+            "priority_info": "default"
+        },
+
+        "lte_failover": {
+            "enabled": false,
+            "interface": "auto",
+            "check_url": "http://192.168.8.1/api/monitoring/status"
+        },
+
+        "cooldown_s": 300
+    }
 }

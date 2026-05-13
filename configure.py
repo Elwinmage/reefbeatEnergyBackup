@@ -1225,10 +1225,11 @@ def run_wizard(install_dir: str):
         }
 
     # =================================================================
-    # Step 7 & 8: MQTT + Polling + Save
+    # Steps 7, 8, 9: MQTT + Notifications + Polling + Save
     # =================================================================
     _step7_mqtt(cfg, defaults)
-    _step8_polling_and_save(cfg, defaults, install_dir)
+    _step8_notifications(cfg, defaults)
+    _step9_polling_and_save(cfg, defaults, install_dir)
 
 
 def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
@@ -1457,10 +1458,320 @@ def _step7_mqtt(cfg: dict, defaults: dict):
         }
 
 
-def _step8_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
-    """Step 8: Polling interval + save configuration."""
+def _step8_notifications(cfg: dict, defaults: dict):
+    """Step 8: Push notifications (ntfy.sh) + 4G LTE failover."""
     # =================================================================
-    # Step 8: Polling interval
+    # Step 8: Push notifications
+    # =================================================================
+    section(t("8. Notifications push (ntfy.sh)",
+              "8. Push notifications (ntfy.sh)"))
+
+    info(t(
+        "ntfy.sh envoie des alertes directement sur votre téléphone,",
+        "ntfy.sh sends alerts directly to your phone,"
+    ))
+    info(t(
+        "sans passer par Home Assistant. Gratuit, sans compte.",
+        "without going through Home Assistant. Free, no account needed."
+    ))
+    print()
+
+    default_notif = defaults.get("notifications", {})
+    use_notif = ask_yes_no(
+        t("Activer les notifications push ?",
+          "Enable push notifications?"),
+        default=default_notif.get("enabled", False)
+    )
+
+    if not use_notif:
+        cfg["notifications"] = {
+            "enabled": False,
+            "provider": "ntfy",
+            "ntfy": {
+                "server": "https://ntfy.sh",
+                "topic": "",
+            },
+            "lte_failover": {"enabled": False},
+            "cooldown_s": 300,
+        }
+        return
+
+    # --- ntfy topic ---
+    print()
+    info(t(
+        "Choisissez un nom de topic unique et secret (ex: reefbeat-monrecif-a7x3).",
+        "Choose a unique and secret topic name (e.g.: reefbeat-myreef-a7x3)."
+    ))
+    info(t(
+        "⚠ N'importe qui connaissant ce nom peut lire vos notifications.",
+        "⚠ Anyone knowing this name can read your notifications."
+    ))
+    info(t(
+        "Utilisez un nom long et aléatoire pour la confidentialité.",
+        "Use a long, random name for privacy."
+    ))
+    print()
+
+    default_ntfy = default_notif.get("ntfy", {})
+    default_topic = default_ntfy.get("topic", "")
+
+    # Generate a suggestion if no existing topic
+    if not default_topic or default_topic == "reefbeat-CHANGE-ME":
+        import random
+        import string
+        import socket
+        uid = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        hostname = socket.gethostname().lower().replace(" ", "-")[:20]
+        suggested_topic = f"reefbeatEnergyBkup-{hostname}-{uid}"
+    else:
+        suggested_topic = default_topic
+
+    ntfy_topic = ask(
+        t("Nom du topic ntfy", "ntfy topic name"),
+        default=suggested_topic
+    )
+
+    ntfy_server = ask(
+        t("Serveur ntfy (par défaut: ntfy.sh public)",
+          "ntfy server (default: public ntfy.sh)"),
+        default=default_ntfy.get("server", "https://ntfy.sh")
+    )
+
+    # --- Install ntfy app ---
+    print()
+    info(t("╔══════════════════════════════════════════════════════════╗",
+           "╔══════════════════════════════════════════════════════════╗"))
+    info(t("║  Installez l'app ntfy sur votre téléphone :             ║",
+           "║  Install the ntfy app on your phone:                    ║"))
+    info(t("║                                                        ║",
+           "║                                                        ║"))
+    info(t("║  Android : https://play.google.com/store/apps/          ║",
+           "║  Android : https://play.google.com/store/apps/          ║"))
+    info(t("║            details?id=io.heckel.ntfy                    ║",
+           "║            details?id=io.heckel.ntfy                    ║"))
+    info(t("║                                                        ║",
+           "║                                                        ║"))
+    info(t("║  iOS     : https://apps.apple.com/app/ntfy/             ║",
+           "║  iOS     : https://apps.apple.com/app/ntfy/             ║"))
+    info(t("║            id1625396347                                 ║",
+           "║            id1625396347                                 ║"))
+    info(t("║                                                        ║",
+           "║                                                        ║"))
+    info(t(f"║  Puis abonnez-vous au topic :                           ║",
+           f"║  Then subscribe to the topic:                            ║"))
+    info(t(f"║  → {ntfy_topic:<53s}║",
+           f"║  → {ntfy_topic:<53s}║"))
+    info(t("╚══════════════════════════════════════════════════════════╝",
+           "╚══════════════════════════════════════════════════════════╝"))
+    print()
+
+    input(f"  {C.BOLD}⏎{C.END} " + t(
+        "Appuyez sur Entrée quand c'est fait...",
+        "Press Enter when done..."
+    ))
+    print()
+
+    # --- Test notification ---
+    print()
+    test_notif = ask_yes_no(
+        t("Envoyer une notification de test ?",
+          "Send a test notification?"),
+        default=True
+    )
+
+    while test_notif:
+        info(t("Envoi du test...", "Sending test..."))
+        send_ok = False
+        try:
+            import requests as req
+            r = req.post(
+                f"{ntfy_server}/{ntfy_topic}",
+                data="reefbeat Backup -- Test notification OK!".encode("utf-8"),
+                headers={
+                    "Title": "reefbeat Backup -- Test",
+                    "Priority": "default",
+                    "Tags": "tropical_fish,zap",
+                },
+                timeout=10,
+            )
+            if r.status_code == 200:
+                send_ok = True
+                ok(t("Notification envoyee au serveur ntfy.",
+                     "Notification sent to ntfy server."))
+            else:
+                warn(t(
+                    f"Echec de l'envoi (HTTP {r.status_code})",
+                    f"Send failed (HTTP {r.status_code})"
+                ))
+        except Exception as e:
+            warn(t(f"Erreur: {e}", f"Error: {e}"))
+
+        if send_ok:
+            print()
+            received = ask_yes_no(
+                t("Avez-vous recu la notification sur votre telephone ?",
+                  "Did you receive the notification on your phone?"),
+                default=True
+            )
+            if received:
+                ok(t("Parfait, les notifications fonctionnent !",
+                     "Perfect, notifications are working!"))
+                break
+            else:
+                print()
+                warn(t("La notification n'a pas ete recue.",
+                       "The notification was not received."))
+                info(t("Verifiez les points suivants :",
+                       "Check the following:"))
+                info(t(f"  1. L'app ntfy est installee sur votre telephone",
+                       f"  1. The ntfy app is installed on your phone"))
+                info(t(f"  2. Vous etes abonne au topic : {ntfy_topic}",
+                       f"  2. You are subscribed to topic: {ntfy_topic}"))
+                info(t(f"  3. Le serveur est : {ntfy_server}",
+                       f"  3. The server is: {ntfy_server}"))
+                info(t("  4. Les notifications de l'app ntfy sont autorisees dans les parametres du telephone",
+                       "  4. Notifications for the ntfy app are allowed in your phone settings"))
+                print()
+
+                change_topic = ask_yes_no(
+                    t("Voulez-vous changer le topic ?",
+                      "Do you want to change the topic?"),
+                    default=False
+                )
+                if change_topic:
+                    ntfy_topic = ask(
+                        t("Nouveau topic ntfy", "New ntfy topic"),
+                        default=ntfy_topic
+                    )
+                    info(t(f"N'oubliez pas de vous abonner au nouveau topic : {ntfy_topic}",
+                           f"Don't forget to subscribe to the new topic: {ntfy_topic}"))
+                    print()
+                    input(f"  {C.BOLD}⏎{C.END} " + t(
+                        "Appuyez sur Entree quand c'est fait...",
+                        "Press Enter when done..."
+                    ))
+
+                test_notif = ask_yes_no(
+                    t("Renvoyer une notification de test ?",
+                      "Send another test notification?"),
+                    default=True
+                )
+        else:
+            # Send failed technically
+            test_notif = ask_yes_no(
+                t("Reessayer ?", "Retry?"),
+                default=True
+            )
+
+    # --- Priorities ---
+    print()
+    info(t(
+        "Priorités des notifications (default/low/high/urgent) :",
+        "Notification priorities (default/low/high/urgent):"
+    ))
+    info(t(
+        "  default = silencieux, high = son, urgent = alarme continue",
+        "  default = silent, high = sound, urgent = persistent alarm"
+    ))
+    print()
+
+    prio_outage = ask(
+        t("Priorité en cas de coupure", "Priority on power outage"),
+        default=default_ntfy.get("priority_outage", "high"),
+        choices=["default", "low", "high", "urgent"]
+    )
+    prio_critical = ask(
+        t("Priorité batterie critique", "Priority on critical battery"),
+        default=default_ntfy.get("priority_critical", "urgent"),
+        choices=["default", "low", "high", "urgent"]
+    )
+    prio_info = ask(
+        t("Priorité infos (retour courant, etc.)", "Priority for info (power restored, etc.)"),
+        default=default_ntfy.get("priority_info", "default"),
+        choices=["default", "low", "high", "urgent"]
+    )
+
+    # --- 4G LTE failover ---
+    print()
+    section(t("8b. Failover 4G/LTE", "8b. 4G/LTE failover"))
+
+    info(t(
+        "Si le Wi-Fi est coupé, les notifications peuvent passer par",
+        "If Wi-Fi is down, notifications can be sent through"
+    ))
+    info(t(
+        "une clé USB 4G (Huawei E3372h recommandée).",
+        "a USB 4G modem (Huawei E3372h recommended)."
+    ))
+    print()
+
+    default_lte = default_notif.get("lte_failover", {})
+
+    # Auto-detect USB modem
+    lte_detected = False
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["lsusb"], capture_output=True, text=True, timeout=5
+        )
+        if "Huawei" in result.stdout or "12d1:" in result.stdout:
+            ok(t("Modem USB Huawei détecté !", "Huawei USB modem detected!"))
+            lte_detected = True
+        else:
+            info(t("Aucun modem USB 4G détecté.", "No USB 4G modem detected."))
+    except Exception:
+        info(t("Impossible de scanner les périphériques USB.", "Cannot scan USB devices."))
+
+    use_lte = ask_yes_no(
+        t("Activer le failover 4G/LTE ?", "Enable 4G/LTE failover?"),
+        default=lte_detected or default_lte.get("enabled", False)
+    )
+
+    if use_lte and not lte_detected:
+        info(t(
+            "Branchez une clé Huawei E3372h avec une carte SIM active.",
+            "Plug in a Huawei E3372h dongle with an active SIM card."
+        ))
+        info(t(
+            "Le modem sera détecté automatiquement au démarrage du service.",
+            "The modem will be detected automatically when the service starts."
+        ))
+
+    # --- Cooldown ---
+    print()
+    cooldown = ask_int(
+        t("Intervalle minimum entre notifications identiques (secondes)",
+          "Minimum interval between identical notifications (seconds)"),
+        default=int(default_notif.get("cooldown_s", 300)),
+        min_val=30, max_val=3600
+    )
+
+    # --- Save ---
+    cfg["notifications"] = {
+        "enabled": True,
+        "provider": "ntfy",
+        "ntfy": {
+            "server": ntfy_server,
+            "topic": ntfy_topic,
+            "priority_outage": prio_outage,
+            "priority_critical": prio_critical,
+            "priority_info": prio_info,
+        },
+        "lte_failover": {
+            "enabled": use_lte,
+            "interface": "auto",
+            "check_url": "http://192.168.8.1/api/monitoring/status",
+        },
+        "cooldown_s": cooldown,
+    }
+
+    ok(t("Notifications configurées", "Notifications configured"))
+
+
+def _step9_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
+    """Step 9: Polling interval + save configuration."""
+    # =================================================================
+    # Step 9: Polling interval
     # =================================================================
     cfg["poll_interval_s"] = float(ask_int(
         t("Intervalle de polling (secondes)", "Polling interval (seconds)"),
