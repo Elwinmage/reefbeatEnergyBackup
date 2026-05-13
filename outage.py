@@ -60,6 +60,7 @@ class RelayDetector:
         )
 
         self._callback = None
+        self._last_state = self.state  # Initialize with current state
 
         # Callbacks de gpiozero
         self._device.when_activated = self._internal_handler
