@@ -93,22 +93,51 @@ class CoulombCounter:
         now = time.monotonic()
 
         if on_mains:
-            # On mains: trust voltage, not coulomb counting.
-            # Charger noise makes current integration unreliable.
-            self._last_time = now
+            # On mains: the charger is active. Two sub-cases:
+            #
+            # 1. Battery is full (float mode): voltage >= 26.4V AND
+            #    current is near zero or slightly negative (trickle).
+            #    → SoC should be ~100%, converge quickly.
+            #
+            # 2. Battery is recharging after an outage (bulk/absorption):
+            #    current is significantly negative (charger pushing amps
+            #    into the battery). We KEEP coulomb counting here so the
+            #    SoC rises naturally as charge flows in, but we disable
+            #    the voltage-based anchoring (voltage is artificially
+            #    high during active charging and not representative of
+            #    actual SoC).
+            #
+            # We distinguish the two by looking at the charging current:
+            # if the charger is pushing more than ~0.5A into the battery,
+            # we're still in active charge (bulk/absorption).
 
-            if voltage >= 27.0:
-                # Float charge: battery is full
-                # Converge quickly to 100% (10% per cycle)
-                self.soc = self.soc * 0.90 + 100.0 * 0.10
-            elif voltage >= 26.5:
-                # Absorption: nearly full, use voltage table
-                target = voltage_to_soc(voltage)
-                self.soc = self.soc * 0.95 + target * 0.05
+            is_actively_charging = current < -0.5
+
+            if is_actively_charging:
+                # Post-outage active charging: use coulomb counting
+                # (current is negative = charging, SoC increases)
+                if self._last_time is not None:
+                    dt_h = (now - self._last_time) / 3600.0
+                    # current is negative → subtracting a negative = adding
+                    self.soc -= (current * dt_h / self.capacity_ah) * 100.0
+                    self.soc = max(0.0, min(100.0, self.soc))
+                self._last_time = now
+
             else:
-                # Unusual on mains — charger issue? Use voltage estimate
-                target = voltage_to_soc(voltage)
-                self.soc = self.soc * 0.97 + target * 0.03
+                # Float / trickle: battery is full or nearly full
+                # LiFePO4 8S float voltage varies by charger:
+                #   - Victron Blue Smart: ~27.2V float
+                #   - Kepworth included charger: ~26.8-27.0V
+                # Any voltage above 26.4V with negligible current
+                # means the battery is at or very near 100%.
+                self._last_time = now
+
+                if voltage >= 26.4:
+                    # Converge to 100% (10% per cycle → stable in ~30s)
+                    self.soc = self.soc * 0.90 + 100.0 * 0.10
+                else:
+                    # Below 26.4V in float is unusual, converge gently
+                    self.soc = self.soc * 0.95 + 100.0 * 0.05
 
             self.soc = max(0.0, min(100.0, self.soc))
             return self.soc
