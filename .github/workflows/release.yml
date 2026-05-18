@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag Version (e.g. v1.2.0)'
+        required: true
+        default: 'v'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update VERSION file
+        id: update_version
+        run: |
+          # Strip the leading 'v' for the VERSION file content
+          VERSION="${{ github.event.inputs.tag }}"
+          VERSION_NUM="${VERSION#v}"
+          echo "${VERSION_NUM}" > VERSION
+          
+          git config --global user.email "moranderic31@gmail.com"
+          git config --global user.name "Elwinmage"
+          git commit -a -m "Release ${VERSION}: update VERSION file"
+          git push origin HEAD:main
+          
+          SHA=$(git rev-parse HEAD)
+          echo "tag_sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "version_num=${VERSION_NUM}" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        if: steps.update_version.outcome == 'success'
+        uses: actions/github-script@v7
+        id: create_tag
+        with:
+          script: |
+            github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/${{ github.event.inputs.tag }}',
+              sha: '${{ steps.update_version.outputs.tag_sha }}'
+            })
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.tag }}
+          name: "reefbeat⚡Backup ${{ github.event.inputs.tag }}"
+          generateReleaseNotes: true
+          prerelease: false
