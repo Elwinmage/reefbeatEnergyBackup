@@ -297,7 +297,8 @@ def main():
 
         while _running:
             # Read battery (INA226 is fast and reliable)
-            reading = monitor.read()
+            on_mains = outage_mgr.power_state == PowerState.MAINS
+            reading = monitor.read(on_mains=on_mains)
 
             # Refresh charger telemetry once every N cycles. Between polls
             # we re-inject the previous reading so the user sees a stable

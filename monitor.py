@@ -64,40 +64,65 @@ def voltage_to_soc(v: float) -> float:
 class CoulombCounter:
     """Track SoC by integrating current over time.
 
-    The primary signal is the current sign+magnitude integrated over time
-    (charge in, charge out). A very small voltage-based correction is
-    applied ONLY when:
-      * the battery is fully resting (current near 0 AND voltage in the
-        flat plateau) -- in that case the voltage tells us almost
-        nothing, so we essentially trust the integrator.
-      * the battery is at one of the extremes (very high or very low
-        voltage), where the curve is steep enough for voltage to be
-        informative.
+    Two operating modes:
 
-    For a LiFePO4 pack, the combined effect is that SoC tracks coulomb
-    integration almost exclusively, with an occasional gentle anchoring
-    at full-charge or near-empty.
+    **On battery** (on_mains=False):
+      Primary signal is current integrated over time (coulomb counting).
+      A light voltage-based correction is applied only at the steep ends
+      of the LiFePO4 curve (above 27.20 V or below 26.20 V). On the flat
+      plateau the voltage tells us almost nothing, so we trust the
+      integrator.
+
+    **On mains** (on_mains=True):
+      The charger is active and the INA226 sees a mix of charger current
+      and load current with significant noise. Coulomb counting drifts
+      because the net current fluctuates around zero. In this mode, we
+      rely primarily on **voltage** to estimate SoC:
+        - If voltage is in the float range (>27.0 V), battery is full → 100%
+        - If voltage is in absorption (26.5-27.0 V), anchor strongly to
+          the voltage-based SoC
+        - Below that, something is wrong (charger failing?) — we still
+          use voltage anchoring with moderate blending
     """
     capacity_ah: float
     soc: float = 100.0
     _last_time: Optional[float] = field(default=None, repr=False)
 
-    def update(self, current: float, voltage: float) -> float:
+    def update(self, current: float, voltage: float,
+               on_mains: bool = False) -> float:
         now = time.monotonic()
+
+        if on_mains:
+            # On mains: trust voltage, not coulomb counting.
+            # Charger noise makes current integration unreliable.
+            self._last_time = now
+
+            if voltage >= 27.0:
+                # Float charge: battery is full
+                # Converge quickly to 100% (10% per cycle)
+                self.soc = self.soc * 0.90 + 100.0 * 0.10
+            elif voltage >= 26.5:
+                # Absorption: nearly full, use voltage table
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.95 + target * 0.05
+            else:
+                # Unusual on mains — charger issue? Use voltage estimate
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.97 + target * 0.03
+
+            self.soc = max(0.0, min(100.0, self.soc))
+            return self.soc
+
+        # On battery: coulomb counting is the primary signal
         if self._last_time is not None:
             dt_h = (now - self._last_time) / 3600.0
             self.soc -= (current * dt_h / self.capacity_ah) * 100.0
             self.soc = max(0.0, min(100.0, self.soc))
         self._last_time = now
 
-        # Voltage-based anchoring: only apply when the reading is in the
-        # informative parts of the curve. On the LiFePO4 plateau (roughly
-        # 26.20-27.20 V) the table is essentially noise, so we skip it.
-        # Outside that range we apply a very light correction.
+        # Voltage-based anchoring: only at steep ends of LFP curve
         if voltage > 1.0 and (voltage > 27.20 or voltage < 26.20):
             target = voltage_to_soc(voltage)
-            # Light blend: 0.5% per cycle is enough to anchor over time
-            # without visibly tugging the integrator.
             self.soc = self.soc * 0.995 + target * 0.005
             self.soc = max(0.0, min(100.0, self.soc))
         return self.soc
@@ -145,8 +170,8 @@ class BatteryMonitorBackend(ABC):
         ...
 
     @abstractmethod
-    def read(self) -> BatteryReading:
-        """Read current battery state."""
+    def read(self, on_mains: bool = False) -> BatteryReading:
+        """Read current battery state. on_mains=True when charger is active."""
         ...
 
     @abstractmethod
@@ -238,12 +263,12 @@ class INA226Backend(BatteryMonitorBackend):
             print(f"[INA226] Init failed: {e}")
             return False
 
-    def read(self) -> BatteryReading:
+    def read(self, on_mains: bool = False) -> BatteryReading:
         voltage = self._read_reg_signed(self._REG_BUS_VOLTAGE) * self._bus_v_lsb
         v_shunt = self._read_reg_signed(self._REG_SHUNT_VOLTAGE) * self._shunt_v_lsb
         current = v_shunt / self._shunt_ohms
         power = voltage * current
-        soc = self._counter.update(current, voltage)
+        soc = self._counter.update(current, voltage, on_mains=on_mains)
 
         return BatteryReading(
             voltage=round(voltage, 2),
