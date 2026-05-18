@@ -16,6 +16,7 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
 - **Intégration Home Assistant** — auto-discovery MQTT (10 capteurs + chargeur si Victron)
 - **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
 - **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
+- **Mise à jour automatique** — vérifie GitHub pour les nouvelles versions, entité `update` dans HA avec bouton "Installer"
 - **Bilingue** — interface FR/EN selon la locale système
 
 ## 📋 Sommaire

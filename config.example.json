@@ -104,6 +104,14 @@
 
     "poll_interval_s": 5.0,
 
+    "updater": {
+        "enabled": true,
+        "check_interval_h": 6,
+        "repo": "Elwinmage/reefbeatEnergyBackup",
+        "branch": "main",
+        "auto_restart": true
+    },
+
     "notifications": {
         "enabled": false,
         "provider": "ntfy",

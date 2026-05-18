@@ -18,6 +18,7 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
 - **MQTT buffer with replay** — data during HA outage is never lost
 - **Auto-detection** — scans your network for ReefBeat devices during setup
+- **Self-update** — checks GitHub for new versions, HA update entity with "Install" button
 - **Bilingual** — FR/EN interface based on system locale
 
 ## 📋 Table of contents
@@ -608,6 +609,9 @@ hotspot.py                          3-level network failover
 controller.py                       Pump control + outage orchestration
 notifier.py                         Push notifications (ntfy.sh + 4G LTE)
 test_notif.py                       CLI notification tester
+updater.py                          Self-update module (GitHub + HA update entity)
+update.py                           CLI update tool
+VERSION                             Current version number
 mqtt_buffer.py                      MQTT buffer with replay
 power_estimation.py                 Power tables + scenario builder
 ble_scan.py                         Victron BLE scanner (used by wizard)
@@ -626,8 +630,38 @@ blueprints/
 |---------|-------------|
 | `python3 configure.py` | Reconfigure (re-run the wizard) |
 | `python3 test_notif.py` | Test push notifications |
+| `python3 update.py` | Check for updates |
+| `python3 update.py --install` | Install available update |
 | `python3 ble_scan.py` | Scan for Victron BLE devices |
 | `python3 setup.py --check` | Verify dependencies and hardware |
+
+---
+
+## 🔄 Updates
+
+### From Home Assistant
+
+An `update` entity appears automatically in HA (`update.reef_battery_update`). It shows the current and latest version, with an **Install** button when an update is available — just like any HA add-on.
+
+The service checks GitHub every 6 hours (configurable). After clicking "Install", the update is downloaded, config.json is backed up, and the service restarts automatically.
+
+### From the command line
+
+```bash
+cd ~/scripts/reefbeatEnergyBackup
+
+# Check for updates
+python3 update.py
+
+# Install update
+python3 update.py --install
+
+# Force reinstall
+python3 update.py --force
+
+# Show current version
+python3 update.py --version
+```
 
 ---
 

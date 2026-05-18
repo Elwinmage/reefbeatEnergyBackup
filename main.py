@@ -25,6 +25,7 @@ from hotspot import NetworkManager
 from controller import PumpController, OutageManager
 from mqtt_buffer import MqttBuffer
 from notifier import create_notifier
+from updater import create_updater
 
 
 # =============================================================================
@@ -256,6 +257,11 @@ def main():
     # --- Outage manager ---
     outage_mgr = OutageManager(pump, network, cfg, notifier=notifier)
 
+    # --- Updater (background GitHub version check + HA update entity) ---
+    install_dir = str(Path(__file__).parent)
+    updater = create_updater(cfg, mqtt_client, install_dir)
+    updater.start()
+
     # --- Outage detector ---
     detector = create_outage_detector(cfg)
     detector.on_change(outage_mgr.on_power_change)
@@ -295,9 +301,21 @@ def main():
         runtime_window_n = max(3, int(runtime_window_s / poll_interval))
         current_history: deque = deque(maxlen=runtime_window_n)
 
+        # Cached theoretical runtime when on mains — computed once, then
+        # stable. Reset to None when switching to battery so it gets
+        # recomputed when mains returns.
+        _mains_runtime_h: Optional[float] = None
+        _prev_on_mains: bool = True
+
         while _running:
             # Read battery (INA226 is fast and reliable)
             on_mains = outage_mgr.power_state == PowerState.MAINS
+
+            # Reset cached runtime when power state changes
+            if on_mains != _prev_on_mains:
+                _mains_runtime_h = None
+                _prev_on_mains = on_mains
+
             reading = monitor.read(on_mains=on_mains)
 
             # Refresh charger telemetry once every N cycles. Between polls
@@ -332,36 +350,48 @@ def main():
             # - On battery: use real measured current (averaged over a
             #   sliding window to smooth INA226 jitter).
             # - On mains: use theoretical consumption from pump power
-            #   tables so the user always sees "if power cuts now, I
-            #   have ~Xh". This is based on the current pump intensity
-            #   level (normal @ 100%).
+            #   tables with FULL battery capacity (not SoC-dependent).
+            #   On mains the battery is maintained at 100% by the charger,
+            #   so the runtime should be a stable constant: "total Ah /
+            #   estimated current draw". Any SoC drift from measurement
+            #   noise must NOT affect this value.
             current_history.append(reading.current)
             runtime_h = None
 
             capacity = cfg.get("battery", {}).get("capacity_ah", 60.0)
-            remaining_ah = (reading.soc / 100.0) * capacity
 
             if outage_mgr.power_state == PowerState.BATTERY:
                 # Real measurement: average current over sliding window
+                remaining_ah = (reading.soc / 100.0) * capacity
                 avg_current = sum(current_history) / len(current_history)
                 if avg_current > 0.2:
                     runtime_h = round(remaining_ah / avg_current, 1)
             else:
-                # Theoretical: estimate from power tables
-                try:
-                    from power_estimation import device_power_at
-                    total_watts = 0.0
-                    for ctrl in cfg.get("pump_control", {}).get("controllers", []):
-                        pump_model = ctrl.get("pump_model", "")
-                        total_watts += device_power_at(pump_model, 100)
-                    # Add RPi consumption (~3.5W)
-                    total_watts += 3.5
-                    if total_watts > 0:
-                        nominal_voltage = 25.6  # LiFePO4 24V nominal
-                        estimated_current = total_watts / nominal_voltage
-                        runtime_h = round(remaining_ah / estimated_current, 1)
-                except Exception:
-                    pass  # power_estimation not available, skip
+                # On mains: battery is full, use 100% capacity
+                # Runtime = total usable capacity / theoretical draw
+                # This is a FIXED value that does not change over time
+                if _mains_runtime_h is None:
+                    try:
+                        from power_estimation import device_power_at
+                        total_watts = 0.0
+                        for ctrl in cfg.get("pump_control", {}).get("controllers", []):
+                            pump_model = ctrl.get("pump_model", "")
+                            w = device_power_at(pump_model, 100)
+                            total_watts += w
+                        # Add RPi consumption (~3.5W)
+                        total_watts += 3.5
+                        if total_watts > 0:
+                            nominal_voltage = 25.6  # LiFePO4 24V nominal
+                            usable_ah = capacity * 0.8  # 80% DoD for LiFePO4
+                            estimated_current = total_watts / nominal_voltage
+                            _mains_runtime_h = round(usable_ah / estimated_current, 1)
+                            print(f"[RUNTIME] Theoretical: {total_watts:.0f}W "
+                                  f"→ {estimated_current:.1f}A "
+                                  f"→ {_mains_runtime_h}h autonomy")
+                    except Exception as e:
+                        print(f"[RUNTIME] Cannot compute theoretical: {e}")
+                        _mains_runtime_h = -1.0
+                runtime_h = _mains_runtime_h if _mains_runtime_h and _mains_runtime_h > 0 else None
 
             # Update SoC (may trigger notifications via notifier)
             outage_mgr.update_soc(reading.soc, runtime_h=runtime_h if runtime_h else -1.0)
@@ -433,6 +463,7 @@ def main():
             time.sleep(poll_interval)
 
     finally:
+        updater.stop()
         network.cleanup()
         detector.cleanup()
         monitor.close()
