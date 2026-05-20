@@ -571,13 +571,13 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 
 ### Buffer MQTT
 
-Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reef-battery-monitor/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
+Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
 
 Configuration optionnelle dans `config.json` :
 
 ```json
 "mqtt": {
-  "buffer_dir": "/var/lib/reef-battery-monitor/mqtt",
+  "buffer_dir": "/var/lib/reefbeat-energy-backup/mqtt",
   "buffer_retention_days": 7
 }
 ```
@@ -636,14 +636,16 @@ Présence "user_y" détectée à la maison ?
 
 ### Installation du blueprint
 
-Le blueprint est fourni dans le dépôt sous [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
-
-Pour l'installer dans HA :
-
-1. Copier le fichier vers `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
-2. Recharger les blueprints dans HA (Paramètres → Automatisations → ⋮ → Recharger)
-3. Créer une nouvelle automatisation à partir de ce blueprint
-4. Renseigner :
+1. Dans Home Assistant, aller dans **Paramètres → Automatisations et Scènes → Blueprints**
+2. Cliquer sur **Importer un Blueprint** (en bas à droite)
+3. Coller cette URL :
+   ```
+   https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/refs/heads/main/blueprints/reef_battery_test.yaml
+   ```
+4. Cliquer **Aperçu** puis **Importer**
+5. Aller dans **Automatisations → + Créer une automatisation → Utiliser un Blueprint**
+6. Sélectionner **reefbeat⚡Backup — Test Batterie**
+7. Renseigner :
    - **Heure** (ex. 14:00) — éviter les heures de nourrissage
    - **Jour de la semaine** : lundi à dimanche
    - **Occurrence** : 1er, 2ème, 3ème, 4ème, ou **dernier** (recommandé pour les week-ends)
@@ -684,7 +686,7 @@ mqtt_buffer.py                      Buffer MQTT avec replay
 power_estimation.py                 Tables de conso + builder de scénario
 ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
 setup.py                            Installeur de dépendances
-reef-battery-monitor.service        Unité systemd
+reefbeat-energy-backup.service   Unité systemd (généré par install.sh)
 docs/
   images/                           Images des composants pour la doc
 blueprints/

@@ -703,14 +703,16 @@ Is "user" detected at home?
 
 ### Blueprint installation
 
-The blueprint is provided in the repo under [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
-
-To install in HA:
-
-1. Copy the file to `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
-2. Reload blueprints in HA (Settings → Automations → ⋮ → Reload)
-3. Create a new automation from this blueprint
-4. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
+1. In Home Assistant, go to **Settings → Automations & Scenes → Blueprints**
+2. Click **Import Blueprint** (bottom right)
+3. Paste this URL:
+   ```
+   https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/refs/heads/main/blueprints/reef_battery_test.yaml
+   ```
+4. Click **Preview** then **Import**
+5. Go to **Automations → + Create Automation → Use a Blueprint**
+6. Select **reefbeat⚡Backup — Battery Test**
+7. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
 
 ### Important precautions
 
