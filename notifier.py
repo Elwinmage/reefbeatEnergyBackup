@@ -76,18 +76,23 @@ class LteModem:
         return self._detect_e3372h()
 
     def _detect_tethering(self) -> bool:
-        """Detect USB tethering interface."""
+        """Detect USB tethering interface.
+        
+        USB tethering interfaces report "state UNKNOWN" (not "state UP")
+        because Linux cannot query the physical link state of a USB
+        gadget. We also accept LOWER_UP as a reliable indicator.
+        """
         try:
             result = subprocess.run(
                 ["ip", "link", "show"], capture_output=True, text=True, timeout=5
             )
-            # Tethering typically shows up as usb0, eth1, or enp*
-            for iface in ["usb0", "eth1", "enp0s"]:
+            for iface in ["usb0", "usb1", "eth1", "enp0s"]:
                 for line in result.stdout.split("\n"):
-                    if iface in line and "state UP" in line:
+                    if iface in line and ("state UP" in line
+                            or "state UNKNOWN" in line):
                         match = re.search(r'\d+:\s+(\S+):', line)
                         if match:
-                            self._interface = match.group(1)
+                            self._interface = match.group(1).rstrip(":")
                             self._available = True
                             print(f"[LTE] Tethering interface found: {self._interface}")
                             return True

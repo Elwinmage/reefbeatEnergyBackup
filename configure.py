@@ -1730,45 +1730,75 @@ def _step8_notifications(cfg: dict, defaults: dict):
         "If Wi-Fi is down, notifications can be sent through"
     ))
     info(t(
-        "une clé USB 4G (Huawei E3372h-320 recommandée).",
-        "a USB 4G modem (Huawei E3372h-320 recommended)."
+        "une connexion 4G (clé USB Huawei E3372h ou tethering smartphone).",
+        "a 4G connection (Huawei E3372h USB dongle or phone tethering)."
     ))
     print()
 
     default_lte = default_notif.get("lte_failover", {})
 
-    # Auto-detect USB modem
-    lte_detected = False
+    # Auto-detect both E3372h and USB tethering
+    import subprocess
+    import re as _re_detect
+
+    e3372h_detected = False
+    tethering_detected = False
     lte_interface = None
+
+    # Detect E3372h via lsusb
     try:
-        import subprocess
         result = subprocess.run(
             ["lsusb"], capture_output=True, text=True, timeout=5
         )
-        if "Huawei" in result.stdout or "12d1:" in result.stdout:
-            ok(t("Modem USB Huawei détecté !", "Huawei USB modem detected!"))
-            lte_detected = True
-
-            # Find the network interface
+        if "Huawei" in result.stdout and ("E3372" in result.stdout
+                or "12d1:" in result.stdout):
+            e3372h_detected = True
+            ok(t("Clé USB Huawei E3372h détectée !",
+                 "Huawei E3372h USB dongle detected!"))
+            # Find network interface
             ip_result = subprocess.run(
                 ["ip", "route"], capture_output=True, text=True, timeout=5
             )
             for line in ip_result.stdout.split("\n"):
                 if "192.168.8.1" in line:
-                    import re as _re
-                    m = _re.search(r'dev\s+(\S+)', line)
+                    m = _re_detect.search(r'dev\s+(\S+)', line)
                     if m:
                         lte_interface = m.group(1)
-                        info(t(f"Interface réseau : {lte_interface}",
-                               f"Network interface: {lte_interface}"))
-        else:
-            info(t("Aucun modem USB 4G détecté.", "No USB 4G modem detected."))
+                        info(t(f"  Interface : {lte_interface}",
+                               f"  Interface: {lte_interface}"))
     except Exception:
-        info(t("Impossible de scanner les périphériques USB.", "Cannot scan USB devices."))
+        pass
 
+    # Detect USB tethering (usb0 with state UNKNOWN or UP)
+    if not e3372h_detected:
+        try:
+            ip_result = subprocess.run(
+                ["ip", "addr", "show"], capture_output=True, text=True, timeout=5
+            )
+            for iface_name in ["usb0", "usb1"]:
+                for line in ip_result.stdout.split("\n"):
+                    if iface_name in line and ("state UP" in line
+                            or "state UNKNOWN" in line):
+                        m = _re_detect.search(r'\d+:\s+(\S+):', line)
+                        if m:
+                            tethering_detected = True
+                            lte_interface = m.group(1).rstrip(":")
+                            ok(t(f"Tethering USB détecté ({lte_interface}) !",
+                                 f"USB tethering detected ({lte_interface})!"))
+                            break
+                if tethering_detected:
+                    break
+        except Exception:
+            pass
+
+    if not e3372h_detected and not tethering_detected:
+        info(t("Aucune connexion 4G détectée (ni clé USB, ni tethering).",
+               "No 4G connection detected (no USB dongle, no tethering)."))
+
+    any_detected = e3372h_detected or tethering_detected
     use_lte = ask_yes_no(
         t("Activer le failover 4G/LTE ?", "Enable 4G/LTE failover?"),
-        default=lte_detected or default_lte.get("enabled", False)
+        default=any_detected or default_lte.get("enabled", False)
     )
 
     lte_mode = "none"  # none, e3372h, tethering
@@ -1790,14 +1820,21 @@ def _step8_notifications(cfg: dict, defaults: dict):
             )),
         ]
         for i, (key, label) in enumerate(lte_methods, 1):
-            marker = " ← détecté" if key == "e3372h" and lte_detected else ""
+            marker = ""
+            if key == "e3372h" and e3372h_detected:
+                marker = t(" ← détecté", " ← detected")
+            elif key == "tethering" and tethering_detected:
+                marker = t(" ← détecté", " ← detected")
             print(f"    {C.BOLD}{i}.{C.END} {label}{marker}")
         print()
 
         default_mode = default_lte.get("mode", "e3372h")
         default_idx = 1 if default_mode == "e3372h" else 2
-        if lte_detected:
+        # Auto-select based on what's detected
+        if e3372h_detected:
             default_idx = 1
+        elif tethering_detected:
+            default_idx = 2
         method_idx = ask_int(
             t("Votre choix", "Your choice"),
             default=default_idx, min_val=1, max_val=2
@@ -1805,7 +1842,7 @@ def _step8_notifications(cfg: dict, defaults: dict):
         lte_mode = lte_methods[method_idx - 1][0]
 
         if lte_mode == "e3372h":
-            if not lte_detected:
+            if not e3372h_detected:
                 info(t(
                     "Branchez une clé Huawei E3372h-320 avec une carte SIM active.",
                     "Plug in a Huawei E3372h-320 dongle with an active SIM card."
@@ -2152,22 +2189,37 @@ def _step8_notifications(cfg: dict, defaults: dict):
             print()
 
             # Detect tethering interface
+            # USB tethering interfaces typically show "state UNKNOWN"
+            # (not "state UP") because Linux can't query the physical
+            # link state of a USB gadget. We also check for an assigned
+            # IP address as confirmation that the interface is active.
             tether_detected = False
             tether_iface = None
             try:
+                # Use "ip addr show" to see both link state AND IP
                 ip_result = subprocess.run(
-                    ["ip", "link", "show"], capture_output=True, text=True, timeout=5
+                    ["ip", "addr", "show"], capture_output=True, text=True, timeout=5
                 )
-                for iface_name in ["usb0", "eth1", "enp0s"]:
+                import re as _re_teth
+                for iface_name in ["usb0", "usb1", "eth1", "enp0s"]:
                     if iface_name in ip_result.stdout:
-                        import re as _re_teth
                         for line in ip_result.stdout.split("\n"):
-                            if iface_name in line and "state UP" in line:
+                            if iface_name in line and ("state UP" in line
+                                    or "state UNKNOWN" in line):
                                 m = _re_teth.search(r'\d+:\s+(\S+):', line)
                                 if m:
-                                    tether_iface = m.group(1)
-                                    tether_detected = True
-                                    break
+                                    candidate = m.group(1).rstrip(":")
+                                    # Verify it has an IP (confirms it's active)
+                                    has_ip = False
+                                    for addr_line in ip_result.stdout.split("\n"):
+                                        if "inet " in addr_line and candidate in ip_result.stdout:
+                                            # Check that inet line follows this interface block
+                                            has_ip = True
+                                            break
+                                    if has_ip or "LOWER_UP" in line:
+                                        tether_iface = candidate
+                                        tether_detected = True
+                                        break
                         if tether_detected:
                             break
             except Exception:
@@ -2538,8 +2590,8 @@ def _step10_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
     banner(t("Configuration terminée !", "Configuration complete!"))
     info(t("Testez avec:  python3 main.py",
            "Test with:    python3 main.py"))
-    info(t("Démarrez le service:  sudo systemctl start reef-battery-monitor",
-           "Start the service:    sudo systemctl start reef-battery-monitor"))
+    info(t("Démarrez le service:  sudo systemctl start reefbeat-energy-backup",
+           "Start the service:    sudo systemctl start reefbeat-energy-backup"))
     print()
 
 

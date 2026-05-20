@@ -537,13 +537,13 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 
 ### MQTT buffer
 
-During an outage, HA and the MQTT broker are almost always unavailable (they're on the same infrastructure as the mains). The service writes all measurements to `/var/lib/reef-battery-monitor/mqtt/messages.jsonl` and replays them automatically when the broker comes back → you get the complete curve after the fact, with no gaps.
+During an outage, HA and the MQTT broker are almost always unavailable (they're on the same infrastructure as the mains). The service writes all measurements to `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` and replays them automatically when the broker comes back → you get the complete curve after the fact, with no gaps.
 
 Optional configuration in `config.json`:
 
 ```json
 "mqtt": {
-  "buffer_dir": "/var/lib/reef-battery-monitor/mqtt",
+  "buffer_dir": "/var/lib/reefbeat-energy-backup/mqtt",
   "buffer_retention_days": 7
 }
 ```
@@ -807,21 +807,6 @@ python3 update.py --force
 # Show current version
 python3 update.py --version
 ```
-
----
-
-## ⚠ Migration from older versions
-
-If you previously installed as `reef-battery-monitor`, remove the old service:
-
-```bash
-sudo systemctl stop reef-battery-monitor
-sudo systemctl disable reef-battery-monitor
-sudo rm /etc/systemd/system/reef-battery-monitor.service
-sudo systemctl daemon-reload
-```
-
-The new service is called `reefbeat-energy-backup`.
 
 ---
 
