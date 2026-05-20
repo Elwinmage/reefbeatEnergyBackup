@@ -559,47 +559,57 @@ Power outage detected (relay GPIO, instant)
     │
     ▼  wait 30s (configurable, for router UPS to stabilize)
     │
-    ├── Level 1: ping ReefBeat controllers directly
+    ├── Step 1: ping ReefBeat controllers via Ethernet (eth0)
     │       │
-    │       ├── OK → controllers reachable, router still alive
-    │       │        → reduce pump intensity, done
+    │       ├── OK → Ethernet still works (all switches survived)
+    │       │        → reduce pump intensity via eth0, done
     │       │
-    │       └── FAIL → controllers unreachable
+    │       └── FAIL → Ethernet down (a switch between RPi and router lost power)
     │
-    ├── Level 2: scan Wi-Fi for home SSID
+    ├── Step 2: scan Wi-Fi for home SSID
     │       │
-    │       ├── FOUND → router alive but RPi lost Wi-Fi
-    │       │           → rejoin network, control pumps, done
+    │       ├── FOUND → router is alive (on UPS) but a switch died
+    │       │           → RPi connects to home Wi-Fi (wlan0)
+    │       │           → controls ReefBeat via Wi-Fi
+    │       │           → monitors: if Wi-Fi drops later → go to Step 3
     │       │
-    │       └── NOT FOUND → router is completely dead
+    │       └── NOT FOUND → router is already dead
+    │                        → go to Step 3
     │
-    └── Level 3: create mirror hotspot (same SSID + password)
+    └── Step 3: create mirror hotspot (same SSID + password on wlan0)
             │
             ├── ReefBeat devices auto-reconnect to RPi hotspot
+            │    (they already know the SSID/password)
             │
             ├── RPi controls pumps locally via HTTP API
             │
-            ├── If 4G modem (E3372h or tethering) is available:
+            ├── If 4G modem (E3372h or USB tethering) is available:
             │       │
             │       ├── NAT enabled: hotspot (wlan0) → 4G (eth1/usb0)
             │       │
-            │       ├── ReefBeat → cloud Red Sea → app mobile ✅
+            │       ├── ReefBeat → Red Sea cloud → mobile app ✅
             │       │
             │       └── ntfy.sh notifications via 4G → your phone ✅
             │
             └── If no 4G:
-                    │
-                    └── Local control only, no internet
-                        → pumps managed, but no app / no notifications
+                    └── Local control only (pumps managed, no internet)
+
+
+    ⏳ During the outage, the system continuously monitors:
+    │
+    ├── Battery SoC → adjusts pump intensity (eco → survival → critical)
+    ├── Wi-Fi availability → if home Wi-Fi reappears, switch back from hotspot
+    └── 4G connectivity → route notifications and ReefBeat traffic
 
 
 Power restored (relay GPIO, instant)
     │
-    ├── Hotspot deactivated, NAT rules cleaned
+    ├── Hotspot deactivated (if active), NAT rules cleaned
     │
-    ├── RPi reconnects to home Wi-Fi
+    ├── RPi reconnects to Ethernet (eth0) when switches come back
+    │    (automatic — Linux prioritizes eth0 over wlan0)
     │
-    ├── ReefBeat devices reconnect to home router
+    ├── ReefBeat devices reconnect to home router Wi-Fi
     │
     ├── Pump intensity restored to 100%
     │

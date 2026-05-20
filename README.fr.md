@@ -480,27 +480,31 @@ Coupure détectée (relais GPIO, instantané)
     │
     ▼  attente 30s (configurable, pour laisser le routeur sur onduleur)
     │
-    ├── Niveau 1 : ping des contrôleurs ReefBeat
+    ├── Étape 1 : ping des contrôleurs ReefBeat via Ethernet (eth0)
     │       │
-    │       ├── OK → contrôleurs joignables, routeur encore vivant
-    │       │        → réduction intensité pompes, terminé
+    │       ├── OK → Ethernet fonctionne encore (tous les switchs ont survécu)
+    │       │        → réduction intensité pompes via eth0, terminé
     │       │
-    │       └── ÉCHEC → contrôleurs injoignables
+    │       └── ÉCHEC → Ethernet coupé (un switch entre le RPi et le routeur a lâché)
     │
-    ├── Niveau 2 : scan Wi-Fi du SSID maison
+    ├── Étape 2 : scan Wi-Fi du SSID maison
     │       │
-    │       ├── TROUVÉ → routeur vivant mais le RPi a perdu le Wi-Fi
-    │       │             → reconnexion au réseau, contrôle des pompes
+    │       ├── TROUVÉ → le routeur est vivant (sur onduleur) mais un switch est mort
+    │       │             → le RPi se connecte au Wi-Fi maison (wlan0)
+    │       │             → contrôle des ReefBeat via Wi-Fi
+    │       │             → surveillance : si le Wi-Fi tombe plus tard → Étape 3
     │       │
-    │       └── ABSENT → le routeur est complètement mort
+    │       └── ABSENT → le routeur est déjà mort
+    │                     → passage à l'Étape 3
     │
-    └── Niveau 3 : création du hotspot miroir (même SSID + mot de passe)
+    └── Étape 3 : création du hotspot miroir (même SSID + mot de passe sur wlan0)
             │
             ├── Les ReefBeat se reconnectent auto au hotspot du RPi
+            │    (ils connaissent déjà le SSID/mot de passe)
             │
             ├── Le RPi pilote les pompes en local via API HTTP
             │
-            ├── Si modem 4G (E3372h ou tethering) disponible :
+            ├── Si modem 4G (E3372h ou tethering USB) disponible :
             │       │
             │       ├── NAT activé : hotspot (wlan0) → 4G (eth1/usb0)
             │       │
@@ -509,18 +513,24 @@ Coupure détectée (relais GPIO, instantané)
             │       └── Notifications ntfy.sh via 4G → votre téléphone ✅
             │
             └── Si pas de 4G :
-                    │
-                    └── Contrôle local uniquement, pas d'internet
-                        → pompes gérées, mais pas d'app ni de notifs
+                    └── Contrôle local uniquement (pompes gérées, pas d'internet)
+
+
+    ⏳ Pendant la coupure, le système surveille en continu :
+    │
+    ├── SoC batterie → ajuste l'intensité des pompes (eco → survival → critical)
+    ├── Disponibilité Wi-Fi → si le Wi-Fi maison réapparaît, rebascule depuis le hotspot
+    └── Connectivité 4G → route les notifications et le trafic ReefBeat
 
 
 Retour du courant (relais GPIO, instantané)
     │
-    ├── Hotspot désactivé, règles NAT nettoyées
+    ├── Hotspot désactivé (si actif), règles NAT nettoyées
     │
-    ├── Le RPi se reconnecte au Wi-Fi maison
+    ├── Le RPi repasse sur Ethernet (eth0) quand les switchs reviennent
+    │    (automatique — Linux priorise eth0 sur wlan0)
     │
-    ├── Les ReefBeat se reconnectent au routeur
+    ├── Les ReefBeat se reconnectent au Wi-Fi du routeur
     │
     ├── Intensité des pompes restaurée à 100%
     │
