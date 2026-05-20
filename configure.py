@@ -1229,7 +1229,8 @@ def run_wizard(install_dir: str):
     # =================================================================
     _step7_mqtt(cfg, defaults)
     _step8_notifications(cfg, defaults)
-    _step9_polling_and_save(cfg, defaults, install_dir)
+    _step9_scheduled_reboot(cfg, defaults)
+    _step10_polling_and_save(cfg, defaults, install_dir)
 
 
 def _build_auto_scenario(cfg: dict, selected: list, defaults: dict) -> dict:
@@ -1741,20 +1742,53 @@ def _step8_notifications(cfg: dict, defaults: dict):
         default=lte_detected or default_lte.get("enabled", False)
     )
 
+    lte_mode = "none"  # none, e3372h, tethering
+
     if use_lte:
-        if not lte_detected:
-            info(t(
-                "Branchez une clé Huawei E3372h-320 avec une carte SIM active.",
-                "Plug in a Huawei E3372h-320 dongle with an active SIM card."
-            ))
-            info(t(
-                "Le modem sera détecté automatiquement au démarrage du service.",
-                "The modem will be detected automatically when the service starts."
-            ))
-        else:
-            # --- SIM PIN check ---
-            print()
-            info(t("Vérification de l'état de la carte SIM...",
+        # Choose LTE method
+        print()
+        info(t("Choisissez le mode de connexion 4G :",
+               "Choose the 4G connection method:"))
+        print()
+        lte_methods = [
+            ("e3372h", t(
+                "Clé USB Huawei E3372h-320 (recommandé — autonome, plug-and-play)",
+                "Huawei E3372h-320 USB dongle (recommended — standalone, plug-and-play)"
+            )),
+            ("tethering", t(
+                "Partage de connexion USB depuis un smartphone (tethering)",
+                "USB tethering from a smartphone"
+            )),
+        ]
+        for i, (key, label) in enumerate(lte_methods, 1):
+            marker = " ← détecté" if key == "e3372h" and lte_detected else ""
+            print(f"    {C.BOLD}{i}.{C.END} {label}{marker}")
+        print()
+
+        default_mode = default_lte.get("mode", "e3372h")
+        default_idx = 1 if default_mode == "e3372h" else 2
+        if lte_detected:
+            default_idx = 1
+        method_idx = ask_int(
+            t("Votre choix", "Your choice"),
+            default=default_idx, min_val=1, max_val=2
+        )
+        lte_mode = lte_methods[method_idx - 1][0]
+
+        if lte_mode == "e3372h":
+            if not lte_detected:
+                info(t(
+                    "Branchez une clé Huawei E3372h-320 avec une carte SIM active.",
+                    "Plug in a Huawei E3372h-320 dongle with an active SIM card."
+                ))
+                info(t(
+                    "Le modem sera détecté automatiquement au démarrage du service.",
+                    "The modem will be detected automatically when the service starts."
+                ))
+            else:
+                # --- SIM PIN check ---
+                print()
+                info(t("Vérification de l'état de la carte SIM...",
                    "Checking SIM card status..."))
 
             sim_ready = False
@@ -1796,8 +1830,8 @@ def _step8_notifications(cfg: dict, defaults: dict):
                     if r.status_code == 200 and "<error>" not in r.text:
                         sim_state = r.text
                         if "<SimState>257</SimState>" in sim_state:
-                            ok(t("Carte SIM prête (pas de PIN requis)",
-                                 "SIM card ready (no PIN required)"))
+                            ok(t("Carte SIM prête (pas de PIN — idéal pour le redémarrage auto)",
+                                 "SIM card ready (no PIN — ideal for automatic reconnection)"))
                             sim_ready = True
                         elif "<SimState>260</SimState>" in sim_state:
                             warn(t("La carte SIM nécessite un code PIN.",
@@ -1835,6 +1869,64 @@ def _step8_notifications(cfg: dict, defaults: dict):
                                     ok(t("PIN accepté, SIM déverrouillée",
                                          "PIN accepted, SIM unlocked"))
                                     sim_ready = True
+
+                                    # Propose to disable PIN permanently
+                                    print()
+                                    info(t(
+                                        "En cas de coupure, la clé 4G redémarre et ne pourra",
+                                        "During a power outage, the 4G modem restarts and won't"
+                                    ))
+                                    info(t(
+                                        "pas se connecter au réseau si le PIN est toujours actif.",
+                                        "be able to connect if the PIN is still active."
+                                    ))
+                                    info(t(
+                                        "Il est fortement recommandé de désactiver le PIN.",
+                                        "It is strongly recommended to disable the PIN."
+                                    ))
+                                    print()
+
+                                    disable_pin = ask_yes_no(
+                                        t("Désactiver le code PIN de la carte SIM ?",
+                                          "Disable the SIM card PIN code?"),
+                                        default=True
+                                    )
+
+                                    if disable_pin:
+                                        # Refresh token
+                                        _hilink_get_token(session)
+                                        disable_xml = (
+                                            '<?xml version="1.0" encoding="UTF-8"?>'
+                                            '<request>'
+                                            f'<CurrentPin>{sim_pin}</CurrentPin>'
+                                            '<PinOperation>2</PinOperation>'
+                                            '</request>'
+                                        )
+                                        session.headers["Content-Type"] = "application/xml"
+                                        dis_r = session.post(
+                                            f"{HILINK}/api/pin/operate",
+                                            data=disable_xml, timeout=10
+                                        )
+                                        if dis_r.status_code == 200 and "<response>OK</response>" in dis_r.text:
+                                            ok(t(
+                                                "PIN désactivé. La clé 4G se connectera automatiquement au redémarrage.",
+                                                "PIN disabled. The 4G modem will connect automatically on reboot."
+                                            ))
+                                        else:
+                                            warn(t(
+                                                "Échec de la désactivation du PIN. Vous pouvez le faire manuellement via http://192.168.8.1",
+                                                "Failed to disable PIN. You can do it manually via http://192.168.8.1"
+                                            ))
+                                    else:
+                                        warn(t(
+                                            "PIN conservé. La clé 4G ne pourra pas se reconnecter automatiquement après un redémarrage.",
+                                            "PIN kept. The 4G modem won't reconnect automatically after a reboot."
+                                        ))
+                                        info(t(
+                                            "Pour désactiver plus tard : http://192.168.8.1 → SIM → Désactiver le PIN",
+                                            "To disable later: http://192.168.8.1 → SIM → Disable PIN"
+                                        ))
+
                                     import time as _time
                                     info(t("Attente de la connexion au réseau...",
                                            "Waiting for network connection..."))
@@ -1987,6 +2079,166 @@ def _step8_notifications(cfg: dict, defaults: dict):
                 except Exception as e:
                     warn(t(f"Erreur ping: {e}", f"Ping error: {e}"))
 
+        elif lte_mode == "tethering":
+            # --- USB tethering from smartphone ---
+            print()
+            section(t("8b-bis. Partage de connexion USB (tethering)",
+                       "8b-bis. USB tethering from smartphone"))
+
+            info(t(
+                "Le RPi utilisera un smartphone branché en USB comme modem 4G.",
+                "The RPi will use a phone connected via USB as a 4G modem."
+            ))
+            info(t(
+                "Le téléphone doit avoir le partage de connexion USB activé.",
+                "The phone must have USB tethering enabled."
+            ))
+            print()
+            info(t("Étapes :", "Steps:"))
+            info(t(
+                "  1. Branchez le téléphone au RPi via un câble USB",
+                "  1. Plug the phone into the RPi via a USB cable"
+            ))
+            info(t(
+                "  2. Sur le téléphone : Paramètres → Réseau → Point d'accès →",
+                "  2. On the phone: Settings → Network → Hotspot →"
+            ))
+            info(t(
+                "     Partage de connexion USB → Activer",
+                "     USB tethering → Enable"
+            ))
+            info(t(
+                "  3. Le RPi verra une nouvelle interface réseau (usb0 ou eth1)",
+                "  3. The RPi will see a new network interface (usb0 or eth1)"
+            ))
+            print()
+            info(t(
+                "⚠ Le téléphone doit être sur batterie ou branché sur un",
+                "⚠ The phone must be on battery or plugged into a"
+            ))
+            info(t(
+                "  chargeur secouru pour fonctionner pendant une coupure.",
+                "  backed-up charger to work during a power outage."
+            ))
+            print()
+
+            # Detect tethering interface
+            tether_detected = False
+            tether_iface = None
+            try:
+                ip_result = subprocess.run(
+                    ["ip", "link", "show"], capture_output=True, text=True, timeout=5
+                )
+                for iface_name in ["usb0", "eth1", "enp0s"]:
+                    if iface_name in ip_result.stdout:
+                        import re as _re_teth
+                        for line in ip_result.stdout.split("\n"):
+                            if iface_name in line and "state UP" in line:
+                                m = _re_teth.search(r'\d+:\s+(\S+):', line)
+                                if m:
+                                    tether_iface = m.group(1)
+                                    tether_detected = True
+                                    break
+                        if tether_detected:
+                            break
+            except Exception:
+                pass
+
+            if tether_detected:
+                ok(t(f"Interface tethering détectée : {tether_iface}",
+                     f"Tethering interface detected: {tether_iface}"))
+
+                # Test connectivity
+                try:
+                    ping_result = subprocess.run(
+                        ["ping", "-c", "2", "-W", "3", "-I", tether_iface, "8.8.8.8"],
+                        capture_output=True, timeout=10
+                    )
+                    if ping_result.returncode == 0:
+                        ok(t("Connexion internet via tethering OK !",
+                             "Internet via tethering OK!"))
+
+                        # Test ntfy via tethering
+                        print()
+                        test_tether = ask_yes_no(
+                            t("Tester l'envoi d'une notification via tethering ?",
+                              "Test sending a notification via tethering?"),
+                            default=True
+                        )
+
+                        while test_tether:
+                            info(t("Envoi via tethering...", "Sending via tethering..."))
+                            try:
+                                teth_result = subprocess.run([
+                                    "curl", "-s", "--max-time", "15",
+                                    "--interface", tether_iface,
+                                    "-H", "Title: reefbeat Backup -- Test tethering",
+                                    "-H", "Priority: default",
+                                    "-H", "Tags: iphone,zap",
+                                    "-d", "Test notification via USB tethering -- OK!",
+                                    f"{ntfy_server}/{ntfy_topic}"
+                                ], capture_output=True, timeout=20)
+
+                                if teth_result.returncode == 0:
+                                    ok(t("Notification envoyée via tethering !",
+                                         "Notification sent via tethering!"))
+
+                                    received = ask_yes_no(
+                                        t("Avez-vous recu la notification ?",
+                                          "Did you receive the notification?"),
+                                        default=True
+                                    )
+                                    if received:
+                                        ok(t("Failover tethering validé !",
+                                             "Tethering failover validated!"))
+                                        break
+                                    else:
+                                        warn(t("Notification non recue.",
+                                               "Notification not received."))
+                                        test_tether = ask_yes_no(
+                                            t("Réessayer ?", "Retry?"),
+                                            default=True
+                                        )
+                                else:
+                                    warn(t(f"Échec curl: {teth_result.stderr.decode()[:100]}",
+                                           f"curl failed: {teth_result.stderr.decode()[:100]}"))
+                                    test_tether = ask_yes_no(
+                                        t("Réessayer ?", "Retry?"),
+                                        default=True
+                                    )
+                            except Exception as e:
+                                warn(t(f"Erreur: {e}", f"Error: {e}"))
+                                test_tether = ask_yes_no(
+                                    t("Réessayer ?", "Retry?"),
+                                    default=True
+                                )
+                    else:
+                        warn(t("Tethering détecté mais pas de connectivité internet.",
+                               "Tethering detected but no internet connectivity."))
+                except Exception:
+                    warn(t("Impossible de tester la connectivité.",
+                           "Cannot test connectivity."))
+
+                lte_interface = tether_iface
+            else:
+                warn(t(
+                    "Aucune interface tethering détectée.",
+                    "No tethering interface detected."
+                ))
+                info(t(
+                    "Branchez votre téléphone et activez le partage de connexion USB.",
+                    "Plug in your phone and enable USB tethering."
+                ))
+                info(t(
+                    "L'interface sera détectée automatiquement au démarrage du service.",
+                    "The interface will be auto-detected when the service starts."
+                ))
+
+            input(f"\n  {C.BOLD}⏎{C.END} " + t(
+                "Appuyez sur Entrée pour continuer...",
+                "Press Enter to continue..."
+            ))
+
     # --- Cooldown ---
     print()
     cooldown = ask_int(
@@ -2051,6 +2303,7 @@ def _step8_notifications(cfg: dict, defaults: dict):
         },
         "lte_failover": {
             "enabled": use_lte,
+            "mode": lte_mode if use_lte else "none",
             "interface": "auto",
             "check_url": "http://192.168.8.1/api/monitoring/status",
         },
@@ -2068,8 +2321,175 @@ def _step8_notifications(cfg: dict, defaults: dict):
     ok(t("Notifications configurées", "Notifications configured"))
 
 
-def _step9_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
-    """Step 9: Polling interval + save configuration."""
+def _step9_scheduled_reboot(cfg: dict, defaults: dict):
+    """Step 9: Scheduled RPi reboot via cron."""
+    section(t("9. Redémarrage programmé du RPi",
+              "9. Scheduled RPi reboot"))
+
+    info(t(
+        "Un redémarrage périodique du RPi permet d'éviter les fuites",
+        "A periodic RPi reboot helps prevent memory leaks,"
+    ))
+    info(t(
+        "mémoire, les processus zombies et les problèmes de stabilité.",
+        "zombie processes, and long-term stability issues."
+    ))
+    print()
+
+    default_reboot = defaults.get("scheduled_reboot", {})
+    use_reboot = ask_yes_no(
+        t("Activer le redémarrage automatique du RPi ?",
+          "Enable automatic RPi reboot?"),
+        default=default_reboot.get("enabled", True)
+    )
+
+    if not use_reboot:
+        cfg["scheduled_reboot"] = {"enabled": False}
+        # Remove existing cron job if any
+        _remove_reboot_cron()
+        return
+
+    interval_days = ask_int(
+        t("Intervalle entre les redémarrages (jours)",
+          "Interval between reboots (days)"),
+        default=default_reboot.get("interval_days", 1),
+        min_val=1, max_val=30
+    )
+
+    reboot_time = ask(
+        t("Heure du redémarrage (HH:MM, format 24h)",
+          "Reboot time (HH:MM, 24h format)"),
+        default=default_reboot.get("time", "01:00")
+    )
+
+    # Validate time format
+    import re as _re_time
+    while not _re_time.match(r'^\d{2}:\d{2}$', reboot_time):
+        warn(t("Format invalide. Utilisez HH:MM (ex: 01:00, 03:30)",
+               "Invalid format. Use HH:MM (e.g.: 01:00, 03:30)"))
+        reboot_time = ask(
+            t("Heure du redémarrage (HH:MM)", "Reboot time (HH:MM)"),
+            default="01:00"
+        )
+
+    hour, minute = reboot_time.split(":")
+
+    # Safety: don't reboot if on battery
+    info(t(
+        "Le redémarrage sera annulé si le système est sur batterie.",
+        "The reboot will be skipped if the system is on battery."
+    ))
+    print()
+
+    # Build cron expression
+    if interval_days == 1:
+        # Every day at HH:MM
+        cron_schedule = f"{minute} {hour} * * *"
+        schedule_desc = t(f"Tous les jours à {reboot_time}",
+                          f"Every day at {reboot_time}")
+    elif interval_days == 7:
+        # Every week (Sunday)
+        cron_schedule = f"{minute} {hour} * * 0"
+        schedule_desc = t(f"Chaque dimanche à {reboot_time}",
+                          f"Every Sunday at {reboot_time}")
+    else:
+        # Every N days
+        cron_schedule = f"{minute} {hour} */{interval_days} * *"
+        schedule_desc = t(f"Tous les {interval_days} jours à {reboot_time}",
+                          f"Every {interval_days} days at {reboot_time}")
+
+    ok(f"{schedule_desc}")
+
+    # Install cron job
+    _install_reboot_cron(cron_schedule, cfg)
+
+    cfg["scheduled_reboot"] = {
+        "enabled": True,
+        "interval_days": interval_days,
+        "time": reboot_time,
+        "cron": cron_schedule,
+    }
+
+
+def _install_reboot_cron(cron_schedule: str, cfg: dict):
+    """Install the reboot cron job with battery check."""
+    import subprocess
+
+    # The cron job checks power state before rebooting:
+    # it reads the GPIO relay pin — if on battery, skip reboot
+    gpio_pin = cfg.get("outage_detection", {}).get("relay", {}).get("gpio_pin", 17)
+
+    # Script that checks if on mains before rebooting
+    check_script = (
+        '#!/bin/bash\n'
+        '# reefbeat-energy-backup: scheduled reboot (skip if on battery)\n'
+        f'# Check GPIO {gpio_pin} — relay NC: 0=mains, 1=outage\n'
+        f'STATE=$(cat /sys/class/gpio/gpio{gpio_pin}/value 2>/dev/null || echo "0")\n'
+        'if [ "$STATE" = "0" ]; then\n'
+        '    logger -t reefbeat "Scheduled reboot: mains OK, rebooting"\n'
+        '    /sbin/reboot\n'
+        'else\n'
+        '    logger -t reefbeat "Scheduled reboot SKIPPED: on battery"\n'
+        'fi\n'
+    )
+
+    script_path = "/usr/local/bin/reefbeat-reboot-check.sh"
+    try:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(check_script)
+            tmp_path = f.name
+
+        subprocess.run(["sudo", "cp", tmp_path, script_path], capture_output=True)
+        subprocess.run(["sudo", "chmod", "+x", script_path], capture_output=True)
+        os.remove(tmp_path)
+
+        # Install cron job
+        cron_line = f"{cron_schedule} root {script_path}"
+        cron_file = "/etc/cron.d/reefbeat-reboot"
+        cron_content = (
+            "# reefbeat-energy-backup: scheduled RPi reboot\n"
+            "# Skips reboot if system is running on battery\n"
+            f"SHELL=/bin/bash\n"
+            f"PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n"
+            f"{cron_line}\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write(cron_content)
+            tmp_cron = f.name
+
+        subprocess.run(["sudo", "cp", tmp_cron, cron_file], capture_output=True)
+        subprocess.run(["sudo", "chmod", "644", cron_file], capture_output=True)
+        os.remove(tmp_cron)
+
+        ok(t("Cron de redémarrage installé", "Reboot cron job installed"))
+        info(f"  {cron_file}")
+
+    except Exception as e:
+        warn(t(f"Erreur installation cron: {e}",
+               f"Cron install error: {e}"))
+        info(t("Vous pouvez l'ajouter manuellement :",
+               "You can add it manually:"))
+        info(f"  echo '{cron_schedule} root {script_path}' | sudo tee /etc/cron.d/reefbeat-reboot")
+
+
+def _remove_reboot_cron():
+    """Remove the reboot cron job."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["sudo", "rm", "-f", "/etc/cron.d/reefbeat-reboot"],
+            capture_output=True)
+        subprocess.run(
+            ["sudo", "rm", "-f", "/usr/local/bin/reefbeat-reboot-check.sh"],
+            capture_output=True)
+    except Exception:
+        pass
+
+
+def _step10_polling_and_save(cfg: dict, defaults: dict, install_dir: str):
+    """Step 10: Polling interval + save configuration."""
     # =================================================================
     # Step 9: Polling interval
     # =================================================================

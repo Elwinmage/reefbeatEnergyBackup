@@ -19,6 +19,7 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **MQTT buffer with replay** — data during HA outage is never lost
 - **Auto-detection** — scans your network for ReefBeat devices during setup
 - **Self-update** — checks GitHub for new versions, HA update entity with "Install" button
+- **Scheduled reboot** — automatic RPi reboot via cron, skipped if on battery
 - **Bilingual** — FR/EN interface based on system locale
 
 ## 📋 Table of contents
@@ -279,6 +280,8 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 | ⚡ **Connected circuit breaker** | Automated discharge tests from HA | ✅ Yes |
 | 📶 **4G LTE USB modem** | Send notifications when Wi-Fi is down | ✅ Yes |
 
+> 💡 **Alternative to the USB modem**: you can use a smartphone connected via USB tethering instead of the E3372h. See the [tethering section](#usb-tethering-alternative) below.
+
 #### 📦 Additional hardware (on top of level 2)
 
 | Component | Suggested model | Approx. price |
@@ -357,7 +360,17 @@ LTE Cat4 150 Mbps, bands 1/3/7/8/20 (800/900/1800/2100/2600 MHz), plug-and-play 
 
 When Wi-Fi and home router are both down, the notifier automatically detects the modem, checks cellular connectivity, and routes ntfy.sh notifications through 4G. HiLink web interface available at `http://192.168.8.1` for signal/status monitoring.
 
+> 🔑 **SIM PIN**: during setup, the wizard detects if the SIM requires a PIN, enters it, and proposes to **disable it permanently**. This is strongly recommended — without it, the modem cannot reconnect automatically after a power cycle.
+
 **4G internet gateway for ReefBeat devices**: when the RPi hotspot is active and this option is enabled, the RPi acts as a NAT router — it forwards internet traffic from the ReefBeat devices (connected to the hotspot) through the 4G modem. This means the **Red Sea mobile app keeps working** during a power outage, as the ReefBeat controllers can still reach the Red Sea cloud servers.
+
+##### USB tethering alternative
+
+If you don't want to buy a USB modem, you can use a **smartphone connected via USB** as a 4G/5G modem. Enable USB tethering on the phone (Settings → Network → Hotspot → USB tethering), plug it into the RPi, and the wizard will detect it.
+
+**Pros**: no extra hardware to buy, uses your existing phone and data plan.
+
+**Cons**: the phone must be physically present, charged (or on a backed-up charger), and USB tethering may need to be re-enabled after a phone reboot. The E3372h is fully autonomous and always ready.
 
 #### ✅ What you get
 
@@ -443,8 +456,9 @@ The `configure.py` wizard is interactive and bilingual (FR/EN based on locale). 
    - **Auto** (recommended): set a target autonomy, the wizard detects the Pi, asks about auxiliary loads, and computes optimal SoC levels + intensities
    - **Simple**: a single backup speed for everything
 7. **MQTT** — Home Assistant connection settings
-8. **Push notifications** — ntfy.sh topic + 4G LTE failover
-9. **Polling interval**
+8. **Push notifications** — ntfy.sh topic + 4G LTE failover (E3372h or tethering) + NAT gateway
+9. **Scheduled reboot** — automatic RPi reboot via cron (skipped if on battery)
+10. **Polling interval**
 
 The result is saved in `config.json` and can be edited manually if needed.
 
@@ -634,6 +648,24 @@ blueprints/
 | `python3 update.py --install` | Install available update |
 | `python3 ble_scan.py` | Scan for Victron BLE devices |
 | `python3 setup.py --check` | Verify dependencies and hardware |
+
+---
+
+## ⏰ Scheduled reboot
+
+The wizard can set up an automatic RPi reboot via cron to prevent long-term stability issues (memory leaks, zombie processes). The reboot is **skipped automatically if the system is running on battery** — it checks the relay GPIO before rebooting.
+
+Configuration example (via wizard):
+- Interval: every day (1-30 days configurable)
+- Time: 01:00 (any HH:MM)
+- Cron job: `/etc/cron.d/reefbeat-reboot`
+- Check script: `/usr/local/bin/reefbeat-reboot-check.sh`
+
+To disable manually:
+
+```bash
+sudo rm /etc/cron.d/reefbeat-reboot
+```
 
 ---
 

@@ -17,6 +17,7 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
 - **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
 - **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
 - **Mise à jour automatique** — vérifie GitHub pour les nouvelles versions, entité `update` dans HA avec bouton "Installer"
+- **Redémarrage programmé** — reboot automatique du RPi via cron, annulé si sur batterie
 - **Bilingue** — interface FR/EN selon la locale système
 
 ## 📋 Sommaire
@@ -247,6 +248,8 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 | ⚡ **Disjoncteur connecté** | Tests de décharge automatisés depuis HA | ✅ Oui |
 | 📶 **Modem USB 4G LTE** | Notifications même quand le Wi-Fi est coupé | ✅ Oui |
 
+> 💡 **Alternative au modem USB** : vous pouvez utiliser un smartphone branché en USB (tethering) à la place de l'E3372h. Voir la section [tethering](#alternative-tethering-usb) ci-dessous.
+
 #### 📦 Matériel additionnel (en plus du niveau 2)
 
 | Composant | Modèle suggéré | Prix indicatif |
@@ -325,7 +328,17 @@ LTE Cat4 150 Mbps, bandes 1/3/7/8/20 (800/900/1800/2100/2600 MHz), mode HiLink p
 
 Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte automatiquement le modem, vérifie la connectivité cellulaire, et route les notifications ntfy.sh à travers la 4G. Interface web HiLink accessible sur `http://192.168.8.1` pour le monitoring signal/état.
 
+> 🔑 **Code PIN SIM** : pendant la configuration, le wizard détecte si la SIM demande un PIN, le saisit, et propose de **le désactiver définitivement**. C'est fortement recommandé — sans ça, le modem ne peut pas se reconnecter automatiquement après un cycle d'alimentation.
+
 **Passerelle internet 4G pour les ReefBeat** : quand le hotspot RPi est actif et cette option activée, le RPi fait office de routeur NAT — il redirige le trafic internet des ReefBeat (connectés au hotspot) à travers le modem 4G. Résultat : **l'app mobile Red Sea continue de fonctionner** pendant une coupure, car les contrôleurs ReefBeat accèdent toujours aux serveurs cloud Red Sea.
+
+##### Alternative tethering USB
+
+Si vous ne souhaitez pas acheter un modem USB, vous pouvez utiliser un **smartphone branché en USB** comme modem 4G/5G. Activez le partage de connexion USB sur le téléphone (Paramètres → Réseau → Point d'accès → Partage USB), branchez-le au RPi, et le wizard le détectera.
+
+**Avantages** : pas de matériel supplémentaire, utilise votre téléphone et forfait existants.
+
+**Inconvénients** : le téléphone doit être physiquement présent, chargé (ou sur un chargeur secouru), et le partage USB peut devoir être réactivé après un redémarrage du téléphone. L'E3372h est totalement autonome et toujours prêt.
 
 #### ✅ Ce que vous obtenez
 
@@ -563,6 +576,24 @@ docs/
   images/                           Images des composants pour la doc
 blueprints/
   reef_battery_test.yaml            Blueprint HA de test de batterie
+```
+
+---
+
+## ⏰ Redémarrage programmé
+
+Le wizard peut configurer un redémarrage automatique du RPi via cron pour prévenir les problèmes de stabilité à long terme (fuites mémoire, processus zombies). Le redémarrage est **automatiquement annulé si le système est sur batterie** — le script vérifie le GPIO du relais avant de rebooter.
+
+Configuration exemple (via le wizard) :
+- Intervalle : tous les jours (1 à 30 jours configurable)
+- Heure : 01:00 (n'importe quelle heure au format HH:MM)
+- Cron : `/etc/cron.d/reefbeat-reboot`
+- Script de vérification : `/usr/local/bin/reefbeat-reboot-check.sh`
+
+Pour désactiver manuellement :
+
+```bash
+sudo rm /etc/cron.d/reefbeat-reboot
 ```
 
 ---

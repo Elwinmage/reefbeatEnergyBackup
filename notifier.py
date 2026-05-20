@@ -53,11 +53,11 @@ except ImportError:
 
 class LteModem:
     """
-    Detects and manages USB 4G/LTE modems (Huawei E3372 HiLink).
+    Detects and manages USB 4G/LTE connections.
 
-    The E3372h creates a virtual Ethernet interface (eth1 or enx...)
-    with gateway 192.168.8.1. We detect it by looking for that
-    specific gateway in the routing table or by scanning USB devices.
+    Supports two modes:
+      - e3372h: Huawei E3372h HiLink USB modem (gateway 192.168.8.1)
+      - tethering: USB tethering from a smartphone (usb0 or similar)
     """
 
     HILINK_GATEWAY = "192.168.8.1"
@@ -65,11 +65,40 @@ class LteModem:
 
     def __init__(self, cfg: dict):
         self._cfg = cfg
+        self._mode = cfg.get("mode", "e3372h")  # e3372h or tethering
         self._interface: Optional[str] = None
         self._available = False
 
     def detect(self) -> bool:
-        """Detect if a Huawei HiLink modem is connected."""
+        """Detect if a LTE connection is available."""
+        if self._mode == "tethering":
+            return self._detect_tethering()
+        return self._detect_e3372h()
+
+    def _detect_tethering(self) -> bool:
+        """Detect USB tethering interface."""
+        try:
+            result = subprocess.run(
+                ["ip", "link", "show"], capture_output=True, text=True, timeout=5
+            )
+            # Tethering typically shows up as usb0, eth1, or enp*
+            for iface in ["usb0", "eth1", "enp0s"]:
+                for line in result.stdout.split("\n"):
+                    if iface in line and "state UP" in line:
+                        match = re.search(r'\d+:\s+(\S+):', line)
+                        if match:
+                            self._interface = match.group(1)
+                            self._available = True
+                            print(f"[LTE] Tethering interface found: {self._interface}")
+                            return True
+        except Exception as e:
+            print(f"[LTE] Tethering detection error: {e}")
+
+        print("[LTE] No tethering interface found")
+        return False
+
+    def _detect_e3372h(self) -> bool:
+        """Detect Huawei E3372h HiLink modem."""
         # Method 1: Check USB devices
         try:
             result = subprocess.run(
@@ -155,30 +184,39 @@ class LteModem:
         return self._interface
 
     def is_connected(self) -> bool:
-        """Check if the modem has an active cellular connection."""
-        if not self._available or not HAS_REQUESTS:
+        """Check if the LTE connection is active."""
+        if not self._available:
             return False
-        try:
-            # HiLink API returns connection status
-            r = requests.get(self.HILINK_STATUS_URL, timeout=3)
-            if r.status_code == 200:
-                # ConnectionStatus 901 = connected
-                return "901" in r.text
-        except Exception:
-            pass
 
-        # Fallback: just ping something via the interface
-        if self._interface:
+        if self._mode == "tethering":
+            # Tethering: just ping via the interface
+            return self._ping_test()
+
+        # E3372h: try HiLink API first
+        if HAS_REQUESTS:
             try:
-                result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "3", "-I", self._interface,
-                     "8.8.8.8"],
-                    capture_output=True, timeout=5
-                )
-                return result.returncode == 0
+                r = requests.get(self.HILINK_STATUS_URL, timeout=3)
+                if r.status_code == 200:
+                    return "901" in r.text
             except Exception:
                 pass
-        return False
+
+        # Fallback: ping test
+        return self._ping_test()
+
+    def _ping_test(self) -> bool:
+        """Test internet connectivity via the LTE interface."""
+        if not self._interface:
+            return False
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", "3", "-I", self._interface,
+                 "8.8.8.8"],
+                capture_output=True, timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
 
 
 # =============================================================================
