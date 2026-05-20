@@ -144,6 +144,49 @@ The principle: **the battery sits in parallel between the charger and the loads*
 - **ReefRun and DC Skimmer**: use the **IP68 4-pin waterproof connector** proprietary to Red Sea (the pump includes its own regulator, raw 24V is fine)
 - The included charger stays plugged in permanently: it automatically switches to float mode once full charge is reached
 
+#### 🔌 Cable fabrication guide
+
+##### ReefWave — 5.5 × 2.1 mm barrel jack
+
+<p align="center">
+  <img src="docs/images/jack-polarity.png" alt="Jack polarity +24V center" width="200">
+</p>
+
+| Pin | Connection |
+|-----|------------|
+| **Center pin** (inside) | **+24V** |
+| **Outer sleeve** | **GND (−)** |
+
+Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the center pin and a black wire to the sleeve.
+
+##### ReefRun / DC Skimmer — IP68 4-pin connector
+
+<p align="center">
+  <img src="docs/images/rsrun-pinout.png" alt="IP68 4-pin connector pinout" width="300">
+</p>
+
+| Pin | Color | Connection |
+|-----|-------|------------|
+| **1** (red) | Red | **+24V** |
+| **2** (red) | Red | **+24V** |
+| **3** (white) | Black | **GND (−)** |
+| **4** (white) | Black | **GND (−)** |
+
+> ⚠️ **Important distinction:**
+>
+> - **DC Skimmer** (single motor): you only need to wire **pins 1 and 3** (+24V and GND). Pins 2 and 4 can be left unconnected.
+> - **Return pump (ReefRun)**: you **must wire all 4 pins** — pins 1+2 for +24V, pins 3+4 for GND. The return pump draws more current and uses both pin pairs to distribute the load. Wiring only 2 pins risks overheating the connector.
+
+> 🔴 **CRITICAL — verify with a multimeter before connecting to the battery!**
+>
+> 1. Set your multimeter to **DC voltage** mode
+> 2. Touch the probes to pins 1 (+) and 3 (−) on your assembled cable
+> 3. Connect momentarily to the battery
+> 4. Verify you read **+24V to +28V** (not negative!)
+> 5. A reversed polarity **will destroy** the ReefBeat controller instantly
+>
+> **Double-check every cable before first use. There is no second chance.**
+
 > ⚠️ **Safety**: a **15A fuse** on the battery + pole, right after the battery, is mandatory. This rating matches the 2.5 mm² cable capacity (~16A max) and provides comfortable margin against typical peak consumption of ~9A (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). In case of a short circuit on the load side, this is what saves the battery (and your house).
 
 #### ✅ What you get
@@ -368,9 +411,9 @@ When Wi-Fi and home router are both down, the notifier automatically detects the
 
 If you don't want to buy a USB modem, you can use a **smartphone connected via USB** as a 4G/5G modem. Enable USB tethering on the phone (Settings → Network → Hotspot → USB tethering), plug it into the RPi, and the wizard will detect it.
 
-**Pros**: no extra hardware to buy, uses your existing phone and data plan.
+**Pros**: no extra hardware to buy, uses your existing phone and data plan. The phone is powered via USB from the RPi (which is on battery), so it stays charged during the outage.
 
-**Cons**: the phone must be physically present, charged (or on a backed-up charger), and USB tethering may need to be re-enabled after a phone reboot. The E3372h is fully autonomous and always ready.
+**Cons**: USB tethering may need to be re-enabled after a phone reboot, and the phone must stay physically connected. The E3372h is fully autonomous and always ready.
 
 #### ✅ What you get
 
@@ -503,6 +546,66 @@ Optional configuration in `config.json`:
   "buffer_dir": "/var/lib/reef-battery-monitor/mqtt",
   "buffer_retention_days": 7
 }
+```
+
+---
+
+## 🔀 Network failover — complete flow
+
+When a power outage is detected and the home router goes down, here is the complete sequence:
+
+```
+Power outage detected (relay GPIO, instant)
+    │
+    ▼  wait 30s (configurable, for router UPS to stabilize)
+    │
+    ├── Level 1: ping ReefBeat controllers directly
+    │       │
+    │       ├── OK → controllers reachable, router still alive
+    │       │        → reduce pump intensity, done
+    │       │
+    │       └── FAIL → controllers unreachable
+    │
+    ├── Level 2: scan Wi-Fi for home SSID
+    │       │
+    │       ├── FOUND → router alive but RPi lost Wi-Fi
+    │       │           → rejoin network, control pumps, done
+    │       │
+    │       └── NOT FOUND → router is completely dead
+    │
+    └── Level 3: create mirror hotspot (same SSID + password)
+            │
+            ├── ReefBeat devices auto-reconnect to RPi hotspot
+            │
+            ├── RPi controls pumps locally via HTTP API
+            │
+            ├── If 4G modem (E3372h or tethering) is available:
+            │       │
+            │       ├── NAT enabled: hotspot (wlan0) → 4G (eth1/usb0)
+            │       │
+            │       ├── ReefBeat → cloud Red Sea → app mobile ✅
+            │       │
+            │       └── ntfy.sh notifications via 4G → your phone ✅
+            │
+            └── If no 4G:
+                    │
+                    └── Local control only, no internet
+                        → pumps managed, but no app / no notifications
+
+
+Power restored (relay GPIO, instant)
+    │
+    ├── Hotspot deactivated, NAT rules cleaned
+    │
+    ├── RPi reconnects to home Wi-Fi
+    │
+    ├── ReefBeat devices reconnect to home router
+    │
+    ├── Pump intensity restored to 100%
+    │
+    ├── MQTT buffer replayed → HA gets the complete discharge curve
+    │
+    └── ntfy notification: "Power restored after Xh, SoC Y%"
 ```
 
 ---

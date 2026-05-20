@@ -112,6 +112,49 @@ Le principe : **la batterie est en parallèle entre le chargeur et les charges**
 - **ReefRun et DC Skimmer** : utilisent le **connecteur étanche IP68 4 broches** propriétaire Red Sea (la pompe inclut son propre régulateur, le 24 V brut suffit)
 - Le chargeur fourni reste branché en permanence : il bascule automatiquement en mode flottant une fois la pleine charge atteinte
 
+#### 🔌 Guide de fabrication des câbles
+
+##### ReefWave — Jack 5,5 × 2,1 mm
+
+<p align="center">
+  <img src="docs/images/jack-polarity.png" alt="Polarité jack +24V au centre" width="200">
+</p>
+
+| Broche | Connexion |
+|--------|-----------|
+| **Broche centrale** (intérieur) | **+24V** |
+| **Manchon extérieur** | **GND (−)** |
+
+Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² sur la broche centrale et un fil noir sur le manchon.
+
+##### ReefRun / DC Skimmer — Connecteur IP68 4 broches
+
+<p align="center">
+  <img src="docs/images/rsrun-pinout.png" alt="Brochage connecteur IP68 4 broches" width="300">
+</p>
+
+| Broche | Couleur | Connexion |
+|--------|---------|-----------|
+| **1** (rouge) | Rouge | **+24V** |
+| **2** (rouge) | Rouge | **+24V** |
+| **3** (blanc) | Noir | **GND (−)** |
+| **4** (blanc) | Noir | **GND (−)** |
+
+> ⚠️ **Distinction importante :**
+>
+> - **DC Skimmer** (moteur unique) : il suffit de câbler les **broches 1 et 3** (+24V et GND). Les broches 2 et 4 peuvent rester non connectées.
+> - **Pompe de remontée (ReefRun)** : il faut **câbler les 4 broches** — broches 1+2 pour le +24V, broches 3+4 pour le GND. La pompe de remontée consomme plus de courant et utilise les deux paires de broches pour répartir la charge. Câbler seulement 2 broches risque de faire surchauffer le connecteur.
+
+> 🔴 **CRITIQUE — vérifiez au multimètre avant le branchement sur la batterie !**
+>
+> 1. Réglez votre multimètre en mode **tension continue (DC V)**
+> 2. Touchez les sondes sur les broches 1 (+) et 3 (−) de votre câble assemblé
+> 3. Connectez brièvement à la batterie
+> 4. Vérifiez que vous lisez **+24V à +28V** (pas négatif !)
+> 5. Une inversion de polarité **détruira** le contrôleur ReefBeat instantanément
+>
+> **Vérifiez chaque câble avant la première utilisation. Il n'y a pas de deuxième chance.**
+
 > ⚠️ **Sécurité** : un **fusible 15 A** sur le pôle + de la batterie, juste après celle-ci, est obligatoire. Ce calibre est calé sur la capacité du câble 2,5 mm² (~16 A maximum) et offre une marge confortable face à une consommation pic typique de ~9 A (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). En cas de court-circuit côté charges, c'est ce qui sauve la batterie (et la maison).
 
 #### ✅ Ce que vous obtenez
@@ -336,9 +379,9 @@ Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte autom
 
 Si vous ne souhaitez pas acheter un modem USB, vous pouvez utiliser un **smartphone branché en USB** comme modem 4G/5G. Activez le partage de connexion USB sur le téléphone (Paramètres → Réseau → Point d'accès → Partage USB), branchez-le au RPi, et le wizard le détectera.
 
-**Avantages** : pas de matériel supplémentaire, utilise votre téléphone et forfait existants.
+**Avantages** : pas de matériel supplémentaire, utilise votre téléphone et forfait existants. Le téléphone est alimenté via USB par le RPi (qui est sur batterie), il reste donc chargé pendant la coupure.
 
-**Inconvénients** : le téléphone doit être physiquement présent, chargé (ou sur un chargeur secouru), et le partage USB peut devoir être réactivé après un redémarrage du téléphone. L'E3372h est totalement autonome et toujours prêt.
+**Inconvénients** : le partage USB peut devoir être réactivé après un redémarrage du téléphone, et le téléphone doit rester physiquement connecté. L'E3372h est totalement autonome et toujours prêt.
 
 #### ✅ Ce que vous obtenez
 
@@ -425,6 +468,66 @@ Le wizard `configure.py` est interactif et bilingue (FR/EN selon la locale). Il 
    - **Simple** : une seule vitesse de secours sur tout
 
 Le résultat est sauvegardé dans `config.json` et peut être édité à la main si besoin.
+
+---
+
+## 🔀 Failover réseau — flux complet
+
+Lorsqu'une coupure de courant est détectée et que le routeur tombe, voici la séquence complète :
+
+```
+Coupure détectée (relais GPIO, instantané)
+    │
+    ▼  attente 30s (configurable, pour laisser le routeur sur onduleur)
+    │
+    ├── Niveau 1 : ping des contrôleurs ReefBeat
+    │       │
+    │       ├── OK → contrôleurs joignables, routeur encore vivant
+    │       │        → réduction intensité pompes, terminé
+    │       │
+    │       └── ÉCHEC → contrôleurs injoignables
+    │
+    ├── Niveau 2 : scan Wi-Fi du SSID maison
+    │       │
+    │       ├── TROUVÉ → routeur vivant mais le RPi a perdu le Wi-Fi
+    │       │             → reconnexion au réseau, contrôle des pompes
+    │       │
+    │       └── ABSENT → le routeur est complètement mort
+    │
+    └── Niveau 3 : création du hotspot miroir (même SSID + mot de passe)
+            │
+            ├── Les ReefBeat se reconnectent auto au hotspot du RPi
+            │
+            ├── Le RPi pilote les pompes en local via API HTTP
+            │
+            ├── Si modem 4G (E3372h ou tethering) disponible :
+            │       │
+            │       ├── NAT activé : hotspot (wlan0) → 4G (eth1/usb0)
+            │       │
+            │       ├── ReefBeat → cloud Red Sea → app mobile ✅
+            │       │
+            │       └── Notifications ntfy.sh via 4G → votre téléphone ✅
+            │
+            └── Si pas de 4G :
+                    │
+                    └── Contrôle local uniquement, pas d'internet
+                        → pompes gérées, mais pas d'app ni de notifs
+
+
+Retour du courant (relais GPIO, instantané)
+    │
+    ├── Hotspot désactivé, règles NAT nettoyées
+    │
+    ├── Le RPi se reconnecte au Wi-Fi maison
+    │
+    ├── Les ReefBeat se reconnectent au routeur
+    │
+    ├── Intensité des pompes restaurée à 100%
+    │
+    ├── Buffer MQTT rejoué → HA reçoit la courbe de décharge complète
+    │
+    └── Notification ntfy : "Courant rétabli après Xh, SoC Y%"
+```
 
 ---
 

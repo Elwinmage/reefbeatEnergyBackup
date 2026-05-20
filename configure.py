@@ -635,32 +635,61 @@ def run_wizard(install_dir: str):
     info(t("Scan du réseau local à la recherche d'équipements Red Sea...",
            "Scanning local network for Red Sea equipment..."))
 
-    all_devices = scan_reefbeat_devices()
+    # Scan loop — some ReefBeat devices can be slow to respond
+    while True:
+        all_devices = scan_reefbeat_devices()
 
-    if not all_devices:
-        fail(t("Aucun équipement ReefBeat détecté sur le réseau.",
-               "No ReefBeat devices detected on the network."))
-        info(t("Vérifiez que vos équipements sont allumés et connectés au même réseau.",
-               "Check that your devices are powered on and on the same network."))
-        return
+        if not all_devices:
+            fail(t("Aucun équipement ReefBeat détecté sur le réseau.",
+                   "No ReefBeat devices detected on the network."))
+            info(t("Vérifiez que vos équipements sont allumés et connectés au même réseau.",
+                   "Check that your devices are powered on and on the same network."))
+        else:
+            # Filter for backup-eligible devices (ReefWave, ReefRun, ReefLED)
+            backup_devices = [
+                d for d in all_devices if d["hw_model"] in BACKUP_DEVICE_TYPES
+            ]
 
-    # Filter for backup-eligible devices (ReefWave, ReefRun, ReefLED)
-    backup_devices = [
-        d for d in all_devices if d["hw_model"] in BACKUP_DEVICE_TYPES
-    ]
+            if not backup_devices:
+                fail(t("Aucun ReefWave, ReefRun ou ReefLED détecté.",
+                       "No ReefWave, ReefRun or ReefLED detected."))
+                info(t(f"({len(all_devices)} équipement(s) trouvé(s) mais aucun compatible)",
+                       f"({len(all_devices)} device(s) found but none compatible)"))
+            else:
+                ok(t(f"{len(backup_devices)} équipement(s) compatible(s) trouvé(s):",
+                     f"{len(backup_devices)} compatible device(s) found:"))
+                print()
+                for d in backup_devices:
+                    print(f"    {C.BOLD}{d['friendly']}{C.END} — {d['name']} ({d['ip']})")
+                print()
 
-    if not backup_devices:
-        fail(t("Aucun ReefWave, ReefRun ou ReefLED détecté.",
-               "No ReefWave, ReefRun or ReefLED detected."))
-        return
+                # Ask if the list is complete
+                list_ok = ask_yes_no(
+                    t("La liste est-elle complète ? (certains équipements mettent du temps à répondre)",
+                      "Is the list complete? (some devices are slow to respond)"),
+                    default=True
+                )
+                if list_ok:
+                    break
+                else:
+                    info(t("Relancement du scan...", "Rescanning..."))
+                    print()
+                    continue
 
-    ok(t(f"{len(backup_devices)} équipement(s) compatible(s) trouvé(s):",
-         f"{len(backup_devices)} compatible device(s) found:"))
-    print()
-
-    for d in backup_devices:
-        print(f"    {C.BOLD}{d['friendly']}{C.END} — {d['name']} ({d['ip']})")
-    print()
+        # No devices or no compatible devices — propose rescan or abort
+        print()
+        rescan = ask_yes_no(
+            t("Relancer le scan ?", "Rescan the network?"),
+            default=True
+        )
+        if rescan:
+            info(t("Relancement du scan...", "Rescanning..."))
+            print()
+            continue
+        else:
+            fail(t("Impossible de continuer sans équipement.",
+                   "Cannot continue without devices."))
+            return
 
     # Let user choose which devices to back up
     selected = choose_from_list(
@@ -2113,12 +2142,12 @@ def _step8_notifications(cfg: dict, defaults: dict):
             ))
             print()
             info(t(
-                "⚠ Le téléphone doit être sur batterie ou branché sur un",
-                "⚠ The phone must be on battery or plugged into a"
+                "ℹ Le téléphone est alimenté via USB par le RPi (lui-même sur",
+                "ℹ The phone is powered via USB from the RPi (which is on"
             ))
             info(t(
-                "  chargeur secouru pour fonctionner pendant une coupure.",
-                "  backed-up charger to work during a power outage."
+                "  batterie), il restera donc chargé pendant la coupure.",
+                "  battery), so it will stay charged during the outage."
             ))
             print()
 
