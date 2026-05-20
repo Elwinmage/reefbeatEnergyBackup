@@ -33,6 +33,7 @@ from typing import Dict, List, Optional, Tuple
 # =============================================================================
 # Per-device power tables
 # =============================================================================
+
 # Each entry maps a "model" identifier (the same string shape as what
 # Red Sea's /dashboard endpoint reports in pump_model, e.g. "return-12000"
 # or "rsk-900") to a tuple (P_min_W, P_max_W). P_min_W is the consumption
@@ -83,6 +84,7 @@ def device_power_at(pump_model: str, intensity_pct: int) -> float:
     # Pick the right table; pump_model strings come from /dashboard.
     table: Optional[Dict[str, Tuple[float, float]]]
     key = pump_model
+
     if pump_model.startswith("return-") or pump_model.startswith("rsk-"):
         table = REEFRUN_POWER
     elif pump_model.startswith("ReefWave"):
@@ -96,11 +98,13 @@ def device_power_at(pump_model: str, intensity_pct: int) -> float:
         return _generic_estimate(intensity_pct)
 
     p_min, p_max = table[key]
+
     # The firmware floor is the lowest non-zero intensity allowed.
     # We use 40% for ReefRun, 10% for ReefWave; below that, the device
     # simply doesn't run, but we may be asked about an in-range value
     # below it (clamped upstream). Be defensive.
     floor = 40 if table is REEFRUN_POWER else 10
+
     if intensity_pct < floor:
         return p_min  # treat as if running at the floor
 
@@ -118,6 +122,7 @@ def _generic_estimate(intensity_pct: int) -> float:
 # =============================================================================
 # Raspberry Pi auto-detection
 # =============================================================================
+
 # Idle power figures are typical for headless operation with an attached
 # I2C peripheral and a Wi-Fi link. Real-world numbers can vary by ~30%.
 
@@ -222,9 +227,10 @@ def build_scenario(
     Strategy:
       - "normal": full speed, no SoC trigger (this is the always-on level).
       - Then 1 to 4 degraded levels, each shedding more equipment:
-          1. Skimmer to 0%, return + wave to ~70%
+          1. Skimmer reduced, return + wave to ~70%
           2. Skimmer 0%, return at floor, waves at ~50%
           3. Everything off except waves at floor
+          4. Only ONE wavemaker at floor (bare minimum water motion)
       - SoC thresholds are spaced so each level lasts ~target_h / N hours
         given its own average power.
 
@@ -252,6 +258,7 @@ def build_scenario(
             num_levels = 3
         else:
             num_levels = 4
+
     num_levels = max(1, min(4, num_levels))
 
     # Always include the "normal" reference level.
@@ -270,7 +277,7 @@ def build_scenario(
     # Per-level intensity policy: progressively shed equipment.
     # Index 0 = first degraded level (least aggressive),
     # higher indices = more aggressive.
-    policies = _degradation_policies(num_levels)
+    policies = _degradation_policies(num_levels, devices)
 
     # Compute the wh budget for each degraded level. We split the
     # capacity proportionally so that each level lasts about the same
@@ -288,13 +295,16 @@ def build_scenario(
         thresholds = [int(soc_top - step * i) for i in range(num_levels)]
 
     level_names = ["eco", "survival", "critical", "minimum"]
+
     for i, policy in enumerate(policies):
         per_device = {d.key: policy(d) for d in devices}
         avg_p = _compute_power(devices, per_device) + aux_load_w
+
         # Wh budget for this level: aim for per_level_target_h hours,
         # capped at the remaining capacity.
         budget = min(remaining_wh, avg_p * per_level_target_h)
         duration = budget / avg_p if avg_p > 0 else 0.0
+
         levels.append(ScenarioLevel(
             name=level_names[i],
             soc_threshold=thresholds[i],
@@ -318,14 +328,34 @@ def _compute_power(devices: List[DeviceSpec],
     return total
 
 
-def _degradation_policies(n: int) -> List:
+def _degradation_policies(n: int, devices: List[DeviceSpec]) -> List:
     """
     Return a list of n policy functions, each taking a DeviceSpec and
     returning the target intensity (%) for that device at that level.
+
     Levels go from least aggressive (level 1) to most aggressive (level n).
+
+    The last level (minimum) always keeps at least ONE wavemaker running
+    at its floor intensity. This ensures a bare minimum of water motion
+    for fish survival. Running only the RPi (aux load) with zero pumps
+    is never useful — if the battery is that low, the BMS will cut soon
+    anyway.
     """
-    # Level recipes, ordered from gentlest to harshest. The build_scenario
-    # caller will use num_levels of these starting from index 0.
+    # Find the least power-hungry wavemaker to be the "last survivor".
+    # If there are no wavemakers, keep the least hungry device overall.
+    waves = [d for d in devices if d.role == "wave"]
+    if waves:
+        # Pick the one with the lowest floor power
+        survivor = min(waves,
+                       key=lambda d: device_power_at(d.pump_model, d.floor_pct))
+    elif devices:
+        survivor = min(devices,
+                       key=lambda d: device_power_at(d.pump_model, d.floor_pct))
+    else:
+        survivor = None
+
+    survivor_key = survivor.key if survivor else None
+
     recipes = [
         # 1: trim everyone to a comfortable mid-range
         lambda d: (
@@ -333,19 +363,27 @@ def _degradation_policies(n: int) -> List:
             else 70 if d.role == "return"
             else 60   # skimmer kept on but reduced
         ),
+
         # 2: shed skimmer, keep return at firmware floor, waves at ~50%
         lambda d: (
             50 if d.role == "wave"
             else d.floor_pct if d.role == "return"
             else 0
         ),
+
         # 3: keep only waves at floor (fish welfare minimum: water motion)
         lambda d: (
             d.floor_pct if d.role == "wave"
             else 0
         ),
-        # 4: emergency, everything off
-        lambda d: 0,
+
+        # 4: bare minimum — only the least-hungry wavemaker at floor
+        # This provides minimal water motion for fish survival while
+        # squeezing the last hours out of the battery.
+        lambda d, _sk=survivor_key: (
+            d.floor_pct if d.key == _sk
+            else 0
+        ),
     ]
     return recipes[:n]
 
