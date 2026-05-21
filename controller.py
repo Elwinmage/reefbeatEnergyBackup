@@ -300,7 +300,7 @@ class PumpController:
         path = self._cfg.get("snapshot_dir")
         if path:
             return Path(path)
-        return Path("/var/lib/reefbeat-energy-backup/snapshots")
+        return Path("/var/lib/reef-battery-monitor/snapshots")
 
     def _snapshot_path(self, key: str) -> Path:
         """Return the snapshot file path for a given pump key."""
@@ -469,8 +469,9 @@ class PumpController:
         Push a single uniform-flow interval at the requested intensity.
 
         Wave type "un" (Uniforme) gives a steady, non-pulsed forward flow
-        at `fti`%. The firmware requires every interval to have a "name"
-        field and specific numeric defaults for frt/rrt/sn.
+        at `fti`%. The other knobs (rti / frt / rrt / pd / sn) are not
+        meaningful for a uniform wave but we set sane defaults to avoid
+        firmware complaints.
 
         Push sequence required by the device:
           POST /auto/init      (with a fresh op uid)
@@ -481,20 +482,19 @@ class PumpController:
         import uuid
         ip = ctrl["ip"]
         op_uid = str(uuid.uuid4())
-        wave_uid = str(uuid.uuid4())
 
         # Build a minimal one-interval uniform schedule covering the whole day.
         new_interval = {
-            "wave_uid": wave_uid,
-            "name": "Backup Mode",
+            "wave_uid": op_uid,
             "type": "un",        # uniform: steady continuous flow
             "direction": "fw",
-            "frt": 2,            # min 2, max 60
-            "rrt": 2,            # min 2, max 60
-            "fti": intensity,    # forward target intensity (min 10, max 100)
-            "rti": intensity,    # reverse target intensity (min 10, max 100)
-            "pd": 2,             # pulse duration (min 2, max 25)
-            "sn": 3,             # sine (min 3, max 10)
+            "frt": 0,            # not meaningful for uniform, but the
+            "rrt": 0,            # firmware may require the keys present
+            "fti": intensity,    # forward target intensity (the only one
+                                 # that actually matters for "un")
+            "rti": 0,
+            "pd": 0,             # no pulsation
+            "sn": True,
             "sync": True,
             "st": 0,             # starts at 00:00
             "start": 0,

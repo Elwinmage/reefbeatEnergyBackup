@@ -703,16 +703,14 @@ Is "user" detected at home?
 
 ### Blueprint installation
 
-1. In Home Assistant, go to **Settings → Automations & Scenes → Blueprints**
-2. Click **Import Blueprint** (bottom right)
-3. Paste this URL:
-   ```
-   https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/refs/heads/main/blueprints/reef_battery_test.yaml
-   ```
-4. Click **Preview** then **Import**
-5. Go to **Automations → + Create Automation → Use a Blueprint**
-6. Select **reefbeat⚡Backup — Battery Test**
-7. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
+The blueprint is provided in the repo under [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
+
+To install in HA:
+
+1. Copy the file to `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
+2. Reload blueprints in HA (Settings → Automations → ⋮ → Reload)
+3. Create a new automation from this blueprint
+4. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
 
 ### Important precautions
 
@@ -738,7 +736,6 @@ hotspot.py                          3-level network failover
 controller.py                       Pump control + outage orchestration
 notifier.py                         Push notifications (ntfy.sh + 4G LTE)
 test_notif.py                       CLI notification tester
-test_reefbeat.py                    CLI ReefBeat equipment tester
 updater.py                          Self-update module (GitHub + HA update entity)
 update.py                           CLI update tool
 VERSION                             Current version number
@@ -759,9 +756,6 @@ blueprints/
 | Command | Description |
 |---------|-------------|
 | `python3 configure.py` | Reconfigure (re-run the wizard) |
-| `python3 test_reefbeat.py` | Test ReefBeat device communication |
-| `python3 test_reefbeat.py --read` | Read current state of all devices |
-| `python3 test_reefbeat.py --test-all` | Full test cycle (read → change → verify → restore) |
 | `python3 test_notif.py` | Test push notifications |
 | `python3 update.py` | Check for updates |
 | `python3 update.py --install` | Install available update |
@@ -813,30 +807,6 @@ python3 update.py --force
 # Show current version
 python3 update.py --version
 ```
-
----
-
-## ⚠️ Important: ReefWave and cloud synchronization
-
-> **ReefWave devices are "cloud-slave"** — they are the only ReefBeat devices controlled by the Red Sea cloud rather than locally.
-
-When reefbeat⚡Backup changes a ReefWave's wave program during an outage (reducing intensity, switching to uniform flow), it uses the **local HTTP API** which works perfectly — the device changes its behavior immediately.
-
-However, the **Red Sea cloud and mobile app are unaware of this change**. The cloud still believes the ReefWave is running its original schedule. This means:
-
-**During an outage:**
-- ✅ The ReefWave physically runs at the reduced intensity (local API works)
-- ✅ Home Assistant sees the correct state (reads from the device directly)
-- ⚠️ The ReefBeat mobile app shows the old schedule (reads from the cloud)
-
-**When power is restored:**
-- ✅ reefbeat⚡Backup restores the original wave program from its snapshot
-- ✅ The device, Home Assistant, and the mobile app are all back in sync
-- ✅ No manual intervention needed
-
-**In practice**, this is not a problem: during an outage, you're not managing wave programs from the app anyway. The important thing is that the pumps physically run at the right intensity, and that everything is restored correctly when power returns.
-
-> 💡 This limitation only affects ReefWave. ReefRun (return pumps, skimmers) are controlled locally and stay in sync with the app at all times.
 
 ---
 

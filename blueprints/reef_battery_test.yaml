@@ -92,14 +92,14 @@ blueprint:
           domain: person
 
     notify_target:
-      name: Mobile notification device
+      name: Mobile notification service
       description: >
-        Select the mobile device to receive test prompts and summaries.
-        Only devices registered via the Home Assistant Companion app
-        are listed.
+        Notification service for prompts and the summary
+        (e.g. "mobile_app_pixel_8"). The "notify." prefix is
+        added automatically.
+      default: "mobile_app"
       selector:
-        device:
-          integration: mobile_app
+        text:
 
     # ----------------------------------------------------------------
     # Hardware bindings
@@ -115,36 +115,26 @@ blueprint:
 
     soc_sensor:
       name: Battery SoC sensor
-      description: >
-        The battery State of Charge sensor published by
-        reefbeat-energy-backup.
+      default: sensor.reef_battery_soc
       selector:
         entity:
-          filter:
-            - device_class: battery
-              domain: sensor
+          domain: sensor
 
     voltage_sensor:
       name: Battery voltage sensor
-      description: >
-        The battery voltage sensor published by
-        reefbeat-energy-backup.
+      default: sensor.reef_battery_voltage
       selector:
         entity:
-          filter:
-            - device_class: voltage
-              domain: sensor
+          domain: sensor
 
     power_sensor:
       name: Battery power sensor (W)
       description: >
-        The battery power sensor, used to forecast the predicted
-        SoC drop during the test.
+        Used to forecast the predicted SoC drop during the test.
+      default: sensor.reef_battery_power
       selector:
         entity:
-          filter:
-            - device_class: power
-              domain: sensor
+          domain: sensor
 
     # ----------------------------------------------------------------
     # Test parameters
@@ -228,13 +218,7 @@ variables:
   v_voltage_floor_v: !input voltage_floor_v
   v_voltage_plateau_min_v: !input voltage_plateau_min_v
   v_battery_capacity_wh: !input battery_capacity_wh
-  v_notify_device: !input notify_target
-  # Resolve device_id to the notify.mobile_app_xxx service name.
-  # device_attr() returns the device name; the notify service is
-  # "mobile_app_" + name with spaces replaced by underscores, lowered.
-  v_notify_target: >-
-    mobile_app_{{ device_attr(v_notify_device, 'name')
-      | lower | replace(' ', '_') | replace('-', '_') }}
+  v_notify_target: !input notify_target
   v_soc_sensor_id: !input soc_sensor
   v_voltage_sensor_id: !input voltage_sensor
   v_power_sensor_id: !input power_sensor
@@ -326,13 +310,6 @@ action:
         event_type: mobile_app_notification_action
         event_data:
           action: REEF_TEST_DENY
-
-  - alias: Clear the prompt notification
-    service: "notify.{{ v_notify_target }}"
-    data:
-      message: clear_notification
-      data:
-        tag: reef_battery_test_prompt
 
   - alias: Abort if user denied
     if:

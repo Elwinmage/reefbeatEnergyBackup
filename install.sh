@@ -239,6 +239,7 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICEEOF
 
+    chmod +x ${SERVICE_FILE}
     # Disable hostapd and dnsmasq (we manage them manually)
     systemctl disable hostapd 2>/dev/null || true
     systemctl stop hostapd 2>/dev/null || true

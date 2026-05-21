@@ -571,13 +571,13 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 
 ### Buffer MQTT
 
-Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
+Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reef-battery-monitor/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
 
 Configuration optionnelle dans `config.json` :
 
 ```json
 "mqtt": {
-  "buffer_dir": "/var/lib/reefbeat-energy-backup/mqtt",
+  "buffer_dir": "/var/lib/reef-battery-monitor/mqtt",
   "buffer_retention_days": 7
 }
 ```
@@ -636,16 +636,14 @@ Présence "user_y" détectée à la maison ?
 
 ### Installation du blueprint
 
-1. Dans Home Assistant, aller dans **Paramètres → Automatisations et Scènes → Blueprints**
-2. Cliquer sur **Importer un Blueprint** (en bas à droite)
-3. Coller cette URL :
-   ```
-   https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/refs/heads/main/blueprints/reef_battery_test.yaml
-   ```
-4. Cliquer **Aperçu** puis **Importer**
-5. Aller dans **Automatisations → + Créer une automatisation → Utiliser un Blueprint**
-6. Sélectionner **reefbeat⚡Backup — Test Batterie**
-7. Renseigner :
+Le blueprint est fourni dans le dépôt sous [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
+
+Pour l'installer dans HA :
+
+1. Copier le fichier vers `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
+2. Recharger les blueprints dans HA (Paramètres → Automatisations → ⋮ → Recharger)
+3. Créer une nouvelle automatisation à partir de ce blueprint
+4. Renseigner :
    - **Heure** (ex. 14:00) — éviter les heures de nourrissage
    - **Jour de la semaine** : lundi à dimanche
    - **Occurrence** : 1er, 2ème, 3ème, 4ème, ou **dernier** (recommandé pour les week-ends)
@@ -686,7 +684,7 @@ mqtt_buffer.py                      Buffer MQTT avec replay
 power_estimation.py                 Tables de conso + builder de scénario
 ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
 setup.py                            Installeur de dépendances
-reefbeat-energy-backup.service   Unité systemd (généré par install.sh)
+reef-battery-monitor.service        Unité systemd
 docs/
   images/                           Images des composants pour la doc
 blueprints/
@@ -710,30 +708,6 @@ Pour désactiver manuellement :
 ```bash
 sudo rm /etc/cron.d/reefbeat-reboot
 ```
-
----
-
-## ⚠️ Important : ReefWave et synchronisation cloud
-
-> **Les ReefWave sont « esclaves du cloud »** — ce sont les seuls équipements ReefBeat contrôlés par le cloud Red Sea plutôt qu'en local.
-
-Quand reefbeat⚡Backup modifie le programme de vagues d'une ReefWave pendant une coupure (réduction d'intensité, passage en flux uniforme), il utilise l'**API HTTP locale** qui fonctionne parfaitement — l'appareil change immédiatement de comportement.
-
-Cependant, le **cloud Red Sea et l'app mobile ne sont pas informés** de ce changement. Le cloud croit toujours que la ReefWave exécute son programme d'origine. Concrètement :
-
-**Pendant la coupure :**
-- ✅ La ReefWave tourne physiquement à l'intensité réduite (l'API locale fonctionne)
-- ✅ Home Assistant voit l'état correct (lecture directe depuis l'appareil)
-- ⚠️ L'app mobile ReefBeat affiche l'ancien programme (lecture depuis le cloud)
-
-**Au retour du courant :**
-- ✅ reefbeat⚡Backup restaure le programme de vagues original depuis son snapshot
-- ✅ L'appareil, Home Assistant et l'app mobile sont de nouveau synchronisés
-- ✅ Aucune intervention manuelle nécessaire
-
-**En pratique**, ce n'est pas un problème : pendant une coupure, vous ne gérez pas les programmes de vagues depuis l'app. L'essentiel est que les pompes tournent physiquement à la bonne intensité, et que tout soit restauré correctement au retour du courant.
-
-> 💡 Cette limitation ne concerne que les ReefWave. Les ReefRun (pompes de remontée, skimmers) sont contrôlés localement et restent synchronisés avec l'app en permanence.
 
 ---
 
