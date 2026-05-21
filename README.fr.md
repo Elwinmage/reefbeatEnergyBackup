@@ -713,6 +713,30 @@ sudo rm /etc/cron.d/reefbeat-reboot
 
 ---
 
+## ⚠️ Important : ReefWave et synchronisation cloud
+
+> **Les ReefWave sont « esclaves du cloud »** — ce sont les seuls équipements ReefBeat contrôlés par le cloud Red Sea plutôt qu'en local.
+
+Quand reefbeat⚡Backup modifie le programme de vagues d'une ReefWave pendant une coupure (réduction d'intensité, passage en flux uniforme), il utilise l'**API HTTP locale** qui fonctionne parfaitement — l'appareil change immédiatement de comportement.
+
+Cependant, le **cloud Red Sea et l'app mobile ne sont pas informés** de ce changement. Le cloud croit toujours que la ReefWave exécute son programme d'origine. Concrètement :
+
+**Pendant la coupure :**
+- ✅ La ReefWave tourne physiquement à l'intensité réduite (l'API locale fonctionne)
+- ✅ Home Assistant voit l'état correct (lecture directe depuis l'appareil)
+- ⚠️ L'app mobile ReefBeat affiche l'ancien programme (lecture depuis le cloud)
+
+**Au retour du courant :**
+- ✅ reefbeat⚡Backup restaure le programme de vagues original depuis son snapshot
+- ✅ L'appareil, Home Assistant et l'app mobile sont de nouveau synchronisés
+- ✅ Aucune intervention manuelle nécessaire
+
+**En pratique**, ce n'est pas un problème : pendant une coupure, vous ne gérez pas les programmes de vagues depuis l'app. L'essentiel est que les pompes tournent physiquement à la bonne intensité, et que tout soit restauré correctement au retour du courant.
+
+> 💡 Cette limitation ne concerne que les ReefWave. Les ReefRun (pompes de remontée, skimmers) sont contrôlés localement et restent synchronisés avec l'app en permanence.
+
+---
+
 ## 🐛 Dépannage
 
 Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour les problèmes courants :
