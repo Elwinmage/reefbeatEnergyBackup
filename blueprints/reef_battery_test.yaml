@@ -327,6 +327,13 @@ action:
         event_data:
           action: REEF_TEST_DENY
 
+  - alias: Clear the prompt notification
+    service: "notify.{{ v_notify_target }}"
+    data:
+      message: clear_notification
+      data:
+        tag: reef_battery_test_prompt
+
   - alias: Abort if user denied
     if:
       - condition: template

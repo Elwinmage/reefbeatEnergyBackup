@@ -149,10 +149,33 @@ class CoulombCounter:
             self.soc = max(0.0, min(100.0, self.soc))
         self._last_time = now
 
-        # Voltage-based anchoring: only at steep ends of LFP curve
-        if voltage > 1.0 and (voltage > 27.20 or voltage < 26.20):
-            target = voltage_to_soc(voltage)
-            self.soc = self.soc * 0.995 + target * 0.005
+        # Voltage-based anchoring: only when the battery is near REST.
+        #
+        # During active discharge (current > 1A), the terminal voltage
+        # drops significantly due to internal resistance (IR drop).
+        # A 120Ah LiFePO4 at 5A discharge can show 26.2V while actually
+        # being at 95%+ SoC — the voltage_to_soc table would say ~30%
+        # which is wildly wrong. The table is calibrated for resting
+        # voltage, not under-load voltage.
+        #
+        # We only apply voltage anchoring when:
+        #   - Current is small (< 0.5A, near rest)
+        #   - AND voltage is at the informative ends of the curve
+        #     (above 27.2V = full, or below 25.0V = nearly empty)
+        #
+        # On the flat plateau (25.0V - 27.2V) with low current, we
+        # still skip because the voltage tells us nothing useful there.
+        is_resting = abs(current) < 0.5
+        if is_resting and voltage > 1.0:
+            if voltage > 27.20:
+                # High end: battery is nearly full
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.995 + target * 0.005
+            elif voltage < 25.0:
+                # Low end: battery is nearly empty — anchor more strongly
+                # to avoid over-discharging
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.99 + target * 0.01
             self.soc = max(0.0, min(100.0, self.soc))
         return self.soc
 
