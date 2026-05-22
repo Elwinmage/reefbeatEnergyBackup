@@ -187,13 +187,14 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 |---|---|---|
 | ![INA226](docs/images/ina226.png) **Module INA226 0-36V/20A** (shunt 2 mΩ embarqué) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
 | ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (ou plus récent) | [Pi 3 B+ 1 Go chez Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
-| Carte microSD 16 Go classe 10 + alim USB du Pi | — | ~15 € |
-| Convertisseur DC-DC 24 V → 5 V 3 A pour le Pi | Step-down buck regulator | ~8 € |
+| Carte microSD 16 Go classe 10 + câble USB pour le Pi | — | ~15 € |
 | ![Finder](docs/images/finder.png) **Relais Finder 40.61.8.230.4000** (bobine 230 V, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
 | ![Support Finder](docs/images/support.png) **Socle DIN Finder 95.95.3** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
 | Rail DIN 35 mm (10 cm) + petit boîtier électrique | — | ~15 € |
 
-**Budget additionnel : ~112 €** — **Budget cumulé niveau 2 : ~402 €**
+**Budget additionnel : ~104 €** — **Budget cumulé niveau 2 : ~394 €**
+
+> 💡 **Alimentation du Pi** : la batterie Kepworth 24V 60Ah dispose d'un **port USB 5V intégré**, qui alimente directement le Raspberry Pi. Aucun convertisseur DC-DC 24V→5V n'est nécessaire — il suffit d'un câble USB entre le port 5V de la batterie et le Pi.
 
 #### 🔌 Schéma de montage
 
@@ -210,22 +211,18 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
                      ┌─────────────┐   └────┬─────┘
                      │  Batterie   │        │ NO/NC
               ┌──────┤  LiFePO₄    │        │ contact
-              │      └──────┬──────┘        │
-              │             │ 24V           │
-              │      [Shunt INA226]         │
-              │             │               │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              │    │ DC-DC 24V→5V   │       │
-              │    └────────┬───────┘       │
-              │             │ 5V            │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              ├────│  Raspberry Pi  │◄──────┘
-              │I2C │   GPIO 26      │ GPIO state
-              │SDA │   GPIO 2 SDA   │
-              │SCL │   GPIO 3 SCL   │
-              │    └────────────────┘
+              │      │ (port 5V    │        │
+              │      │  intégré)   │        │
+              │      └──┬───────┬──┘        │
+              │         │ 24V   │ 5V (USB)  │
+              │  [Shunt INA226] │           │
+              │         │       ▼           │
+              │         │  ┌────────────────┐
+              ├─────────┘  │  Raspberry Pi  │◄──────┘
+              │       I2C  │   GPIO 26      │ GPIO state
+              │       SDA  │   GPIO 2 SDA   │
+              │       SCL  │   GPIO 3 SCL   │
+              │            └────────────────┘
               │
               ▼
        ReefRun / ReefWave / DC Skimmer
@@ -239,17 +236,21 @@ Le module INA226 doit être **en série sur le pôle + de la batterie**, entre l
 
 ```
 Batterie (+) ──► [IN+ shunt INA226 IN−] ──► Bus + 24V ─┬─► Chargeur (sortie)
-                                                        ├─► DC-DC vers Pi
                                                         ├─► ReefRun
                                                         ├─► ReefWave
                                                         └─► DC Skimmer
 
 Batterie (−) ──────────────────────────► Bus − (commun)
+
+(Le Raspberry Pi est alimenté séparément par le port USB 5V intégré de la
+ batterie, en aval du shunt — voir la note sur le coulomb counting ci-dessous.)
 ```
 
 Le shunt voit donc :
 - **courant positif** = la batterie débite (décharge ou alimentation des charges)
 - **courant négatif** = la batterie reçoit (charge depuis le Victron)
+
+> ⚠️ **Conso du Pi non mesurée** : comme le Raspberry Pi est alimenté par le port USB 5V intégré de la batterie (en aval du shunt INA226), sa consommation (~0,5–1 A en 5V, soit ~0,1–0,2 A ramené au 24V) **n'est pas comptabilisée** par le coulomb counting. L'autonomie réelle sera donc légèrement inférieure à l'estimation. Si vous voulez une mesure exacte, alimentez le Pi via un convertisseur DC-DC 24V→5V branché **en aval du shunt** (sur le bus 24V) plutôt que sur le port 5V de la batterie.
 
 **Câblage du relais de détection de coupure** :
 

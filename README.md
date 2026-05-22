@@ -219,13 +219,14 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 |---|---|---|
 | ![INA226](docs/images/ina226.png) **INA226 module 0-36V/20A** (2 mΩ onboard shunt) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
 | ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (or newer) | [Pi 3 B+ 1GB at Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
-| 16 GB class 10 microSD + Pi USB power supply | — | ~15 € |
-| DC-DC converter 24V → 5V 3A for the Pi | Step-down buck regulator | ~8 € |
+| 16 GB class 10 microSD + USB cable for the Pi | — | ~15 € |
 | ![Finder](docs/images/finder.png) **Finder 40.61.8.230.4000 relay** (230V coil, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
 | ![Support](docs/images/support.png) **Finder 95.95.3 DIN socket** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
 | 35 mm DIN rail (10 cm) + small electrical enclosure | — | ~15 € |
 
-**Additional budget: ~112 €** — **Cumulative level 2 budget: ~402 €**
+**Additional budget: ~104 €** — **Cumulative level 2 budget: ~394 €**
+
+> 💡 **Powering the Pi**: the Kepworth 24V 60Ah battery has a **built-in 5V USB port** that powers the Raspberry Pi directly. No 24V→5V DC-DC converter is needed — just a USB cable between the battery's 5V port and the Pi.
 
 #### 🔌 Wiring diagram
 
@@ -242,22 +243,18 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
                      ┌─────────────┐   └────┬─────┘
                      │   Battery   │        │ NO/NC
               ┌──────┤  LiFePO₄    │        │ contact
-              │      └──────┬──────┘        │
-              │             │ 24V           │
-              │      [Shunt INA226]         │
-              │             │               │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              │    │ DC-DC 24V→5V  │       │
-              │    └────────┬───────┘       │
-              │             │ 5V            │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              ├────│  Raspberry Pi  │◄──────┘
-              │I2C │   GPIO 26     │ GPIO state
-              │SDA │   GPIO 2 SDA  │
-              │SCL │   GPIO 3 SCL  │
-              │    └────────────────┘
+              │      │ (built-in   │        │
+              │      │  5V port)   │        │
+              │      └──┬───────┬──┘        │
+              │         │ 24V   │ 5V (USB)  │
+              │  [Shunt INA226] │           │
+              │         │       ▼           │
+              │         │  ┌────────────────┐
+              ├─────────┘  │  Raspberry Pi  │◄──────┘
+              │       I2C  │   GPIO 26      │ GPIO state
+              │       SDA  │   GPIO 2 SDA   │
+              │       SCL  │   GPIO 3 SCL   │
+              │            └────────────────┘
               │
               ▼
        ReefRun / ReefWave / DC Skimmer
@@ -271,17 +268,21 @@ The INA226 module must be **in series on the battery + pole**, between the batte
 
 ```
 Battery (+) ──► [IN+ shunt INA226 IN−] ──► Bus + 24V ─┬─► Charger (output)
-                                                        ├─► DC-DC to Pi
                                                         ├─► ReefRun
                                                         ├─► ReefWave
                                                         └─► DC Skimmer
 
 Battery (−) ──────────────────────────► Bus − (common)
+
+(The Raspberry Pi is powered separately from the battery's built-in 5V USB
+ port, downstream of the shunt — see the coulomb counting note below.)
 ```
 
 The shunt sees:
 - **positive current** = battery is discharging (supplying loads)
 - **negative current** = battery is charging (from charger)
+
+> ⚠️ **Pi consumption not measured**: since the Raspberry Pi is powered from the battery's built-in 5V USB port (downstream of the INA226 shunt), its consumption (~0.5–1 A at 5V, i.e. ~0.1–0.2 A referred to 24V) is **not counted** by the coulomb counting. Real autonomy will therefore be slightly lower than the estimate. If you want an exact measurement, power the Pi through a 24V→5V DC-DC converter wired **downstream of the shunt** (on the 24V bus) instead of the battery's 5V port.
 
 **Outage detection relay wiring**:
 
