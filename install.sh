@@ -178,7 +178,7 @@ fi
 
 # Make entry-point scripts executable (lost on tarball extraction / git clone)
 chmod +x "${INSTALL_DIR}/main.py" 2>/dev/null || true
-for _script in configure.py ble_scan.py update.py test_notif.py test_reefbeat.py; do
+for _script in configure.py ble_scan.py update.py test_notif.py test_reefbeat.py restore_pumps.py; do
     [ -f "${INSTALL_DIR}/${_script}" ] && chmod +x "${INSTALL_DIR}/${_script}" 2>/dev/null || true
 done
 
@@ -240,6 +240,8 @@ Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+# Ensures /var/lib/reefbeat-energy-backup exists (snapshots + reference).
+StateDirectory=reefbeat-energy-backup
 
 [Install]
 WantedBy=multi-user.target

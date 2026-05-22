@@ -169,6 +169,15 @@ class PumpController:
         # Current active level name (for status reporting)
         self.active_level_name = "normal"
 
+        # Background restore-retry: when mains returns, the Red Sea devices
+        # may still be (re)joining Wi-Fi and unreachable for a while. We
+        # retry restoring their original config until every snapshot is
+        # successfully re-applied (and dropped), instead of giving up after
+        # one failed attempt.
+        self._restore_retry_thread: Optional[threading.Thread] = None
+        self._stop_restore_retry = threading.Event()
+        self._restore_cfg = self._pump_cfg.get("restore_retry", {})
+
     @property
     def current_intensity(self) -> int:
         """Average intensity across all pumps (for status display)."""
@@ -231,24 +240,86 @@ class PumpController:
 
         We do NOT just push 100% via _api_set: that would replace the
         user's daily schedule with a flat one-slot or uniform wave.
+
+        At mains return the Red Sea devices may still be rejoining Wi-Fi,
+        so a single attempt often fails. We do one immediate pass, then
+        spawn a background thread that keeps retrying any pump whose
+        snapshot is still on disk (i.e. not yet successfully restored).
         """
         normal = self._resolver.normal_level
         with self._lock:
             self.active_level_name = "normal"
-            controllers = self._pump_cfg.get("controllers", [])
-
-            for ctrl in controllers:
-                key = ctrl["key"]
-                # Only restore if we actually overrode this pump (i.e. a
-                # snapshot is present on disk). Otherwise nothing to do.
-                if self._load_snapshot(key) is not None:
-                    label = self._ctrl_label(ctrl)
-                    print(f"  [PUMP] {label}: restoring original config")
-                    self._api_restore(ctrl)
-                # Either way, the pump is now back to normal target.
-                self._device_intensities[key] = normal.get_intensity(key)
-
+            # Mark all pumps as logically back to normal for status/MQTT.
+            for ctrl in self._pump_cfg.get("controllers", []):
+                self._device_intensities[ctrl["key"]] = normal.get_intensity(
+                    ctrl["key"])
             self._publish_pump_state(normal, "power_restored")
+
+        # One immediate attempt, then background retries for whatever failed.
+        remaining = self._restore_pass()
+        if remaining:
+            self._start_restore_retry()
+
+    def _restore_pass(self) -> int:
+        """
+        Attempt to restore every pump that still has a snapshot on disk.
+
+        Returns the number of pumps still NOT restored after this pass
+        (i.e. snapshots still present). _api_restore drops the snapshot
+        only on success, so a lingering snapshot means "retry needed".
+        """
+        controllers = self._pump_cfg.get("controllers", [])
+        remaining = 0
+        for ctrl in controllers:
+            key = ctrl["key"]
+            if self._load_snapshot(key) is None:
+                continue  # never overridden, or already restored
+            label = self._ctrl_label(ctrl)
+            print(f"  [PUMP] {label}: restoring original config")
+            self._api_restore(ctrl)
+            # If the snapshot is still there, the restore failed.
+            if self._load_snapshot(key) is not None:
+                remaining += 1
+        return remaining
+
+    def _start_restore_retry(self) -> None:
+        """Spawn (or restart) the background restore-retry thread."""
+        if (self._restore_retry_thread is not None
+                and self._restore_retry_thread.is_alive()):
+            return  # already retrying
+        self._stop_restore_retry.clear()
+        self._restore_retry_thread = threading.Thread(
+            target=self._restore_retry_loop, daemon=True
+        )
+        self._restore_retry_thread.start()
+
+    def _restore_retry_loop(self) -> None:
+        """
+        Keep retrying restore until all snapshots are gone, a stop is
+        requested (e.g. a new outage), or we exhaust max attempts.
+        """
+        interval = float(self._restore_cfg.get("interval_s", 30.0))
+        max_attempts = int(self._restore_cfg.get("max_attempts", 40))
+        attempt = 0
+        print(f"[RESTORE] Background retry started "
+              f"(every {interval:.0f}s, up to {max_attempts} attempts)")
+        while not self._stop_restore_retry.wait(timeout=interval):
+            attempt += 1
+            remaining = self._restore_pass()
+            if remaining == 0:
+                print(f"[RESTORE] All pumps restored after {attempt} retry(ies)")
+                return
+            if attempt >= max_attempts:
+                print(f"[RESTORE] Giving up after {attempt} attempts; "
+                      f"{remaining} pump(s) still unrestored. Snapshots kept "
+                      f"on disk -- run 'python3 restore_pumps.py' manually.")
+                return
+            print(f"[RESTORE] Attempt {attempt}: {remaining} pump(s) still "
+                  "unreachable, will retry")
+
+    def stop_restore_retry(self) -> None:
+        """Cancel any in-flight restore-retry (e.g. a new outage began)."""
+        self._stop_restore_retry.set()
 
     def reconcile_on_startup(self, on_battery: bool) -> None:
         """
@@ -294,19 +365,49 @@ class PumpController:
     # snapshot lets us push back the original config when the mains return.
 
     @property
-    def _snapshot_dir(self) -> Path:
-        """Where to persist per-pump original configuration."""
-        # Honour an explicit override; otherwise put it next to the config.
-        path = self._cfg.get("snapshot_dir")
+    def _snapshot_base(self) -> Path:
+        """Base directory for all on-disk snapshots."""
+        # NOTE: the override lives under pump_control (self._pump_cfg), not
+        # at the config root. Reading it from self._cfg was a bug: the
+        # override never took effect.
+        path = self._pump_cfg.get("snapshot_dir")
         if path:
             return Path(path)
-        return Path("/var/lib/reef-battery-monitor/snapshots")
+        return Path("/var/lib/reefbeat-energy-backup")
+
+    @property
+    def _snapshot_dir(self) -> Path:
+        """
+        Where pre-outage snapshots live.
+
+        These are captured the first time we override a pump during an
+        outage, and deleted once the original config is successfully
+        restored. A file here means "restore still pending".
+        """
+        return self._snapshot_base / "snapshots"
+
+    @property
+    def _reference_dir(self) -> Path:
+        """
+        Where periodic *reference* snapshots live.
+
+        Captured on a timer while running in nominal mode (mains, full
+        speed), these are a safety net: they are NOT deleted on restore,
+        so we always have a recent known-good config to fall back on even
+        if the pre-outage snapshot was never taken or got lost.
+        """
+        return self._snapshot_base / "reference"
 
     def _snapshot_path(self, key: str) -> Path:
-        """Return the snapshot file path for a given pump key."""
+        """Return the pre-outage snapshot file path for a given pump key."""
         # Sanitise the key for filesystem usage (":" is fine on ext4 but ugly)
         safe = key.replace("/", "_").replace(":", "-")
         return self._snapshot_dir / f"{safe}.json"
+
+    def _reference_path(self, key: str) -> Path:
+        """Return the reference snapshot file path for a given pump key."""
+        safe = key.replace("/", "_").replace(":", "-")
+        return self._reference_dir / f"{safe}.json"
 
     def _save_snapshot(self, key: str, snapshot: Dict[str, Any]) -> None:
         """Persist a snapshot atomically (tmp + rename)."""
@@ -331,11 +432,33 @@ class PumpController:
             return None
 
     def _drop_snapshot(self, key: str) -> None:
-        """Remove a snapshot file (after successful restore)."""
+        """Remove a pre-outage snapshot file (after successful restore)."""
         try:
             self._snapshot_path(key).unlink(missing_ok=True)
         except OSError:
             pass
+
+    def _save_reference(self, key: str, snapshot: Dict[str, Any]) -> None:
+        """Persist a reference snapshot atomically (tmp + rename)."""
+        try:
+            self._reference_dir.mkdir(parents=True, exist_ok=True)
+            path = self._reference_path(key)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(snapshot, indent=2))
+            os.replace(tmp, path)
+        except OSError as e:
+            print(f"    [REFERENCE] failed to save {key}: {e}")
+
+    def _load_reference(self, key: str) -> Optional[Dict[str, Any]]:
+        """Load a reference snapshot from disk if present."""
+        path = self._reference_path(key)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"    [REFERENCE] failed to load {key}: {e}")
+            return None
 
     # -------------------------------------------------------------------------
     # ReefBeat HTTP primitives
@@ -469,9 +592,8 @@ class PumpController:
         Push a single uniform-flow interval at the requested intensity.
 
         Wave type "un" (Uniforme) gives a steady, non-pulsed forward flow
-        at `fti`%. The other knobs (rti / frt / rrt / pd / sn) are not
-        meaningful for a uniform wave but we set sane defaults to avoid
-        firmware complaints.
+        at `fti`%. The firmware requires every interval to have a "name"
+        field and specific numeric defaults for frt/rrt/sn.
 
         Push sequence required by the device:
           POST /auto/init      (with a fresh op uid)
@@ -482,19 +604,20 @@ class PumpController:
         import uuid
         ip = ctrl["ip"]
         op_uid = str(uuid.uuid4())
+        wave_uid = str(uuid.uuid4())
 
         # Build a minimal one-interval uniform schedule covering the whole day.
         new_interval = {
-            "wave_uid": op_uid,
+            "wave_uid": wave_uid,
+            "name": "Backup Mode",
             "type": "un",        # uniform: steady continuous flow
             "direction": "fw",
-            "frt": 0,            # not meaningful for uniform, but the
-            "rrt": 0,            # firmware may require the keys present
-            "fti": intensity,    # forward target intensity (the only one
-                                 # that actually matters for "un")
-            "rti": 0,
-            "pd": 0,             # no pulsation
-            "sn": True,
+            "frt": 2,            # min 2, max 60
+            "rrt": 2,            # min 2, max 60
+            "fti": intensity,    # forward target intensity (min 10, max 100)
+            "rti": intensity,    # reverse target intensity (min 10, max 100)
+            "pd": 2,             # pulse duration (min 2, max 25)
+            "sn": 3,             # sine (min 3, max 10)
             "sync": True,
             "st": 0,             # starts at 00:00
             "start": 0,
@@ -538,26 +661,44 @@ class PumpController:
     # Snapshot orchestration (capture once before first override, restore once)
     # -------------------------------------------------------------------------
 
+    def _capture_config(self, ctrl: dict) -> Optional[Dict[str, Any]]:
+        """
+        Read a device's current configuration into a snapshot dict.
+        Returns None if the device family is unknown or the read failed.
+        """
+        hw = ctrl["hw_model"]
+        if hw.startswith("RSRUN"):
+            return self._rsrun_snapshot(ctrl)
+        if hw.startswith("RSWAVE"):
+            return self._rswave_snapshot(ctrl)
+        return None
+
     def _ensure_snapshot(self, ctrl: dict) -> None:
         """
         Capture the device's original configuration the first time we are
         about to override it during an outage. Idempotent: if a snapshot
         already exists on disk, don't overwrite it (we'd lose the original).
+
+        If the live read fails (device already unreachable when the outage
+        hits), we fall back to the most recent *reference* snapshot so we
+        still have something to restore later.
         """
         key = ctrl["key"]
         if self._load_snapshot(key) is not None:
             return  # already have one (e.g. survived a Pi reboot)
 
-        hw = ctrl["hw_model"]
-        if hw.startswith("RSRUN"):
-            snap = self._rsrun_snapshot(ctrl)
-        elif hw.startswith("RSWAVE"):
-            snap = self._rswave_snapshot(ctrl)
-        else:
-            return  # unknown family
+        snap = self._capture_config(ctrl)
 
         if snap is None:
-            print(f"    [SNAP] {self._ctrl_label(ctrl)}: snapshot failed")
+            # Live capture failed — fall back to the periodic reference.
+            ref = self._load_reference(key)
+            if ref is not None:
+                self._save_snapshot(key, ref)
+                print(f"    [SNAP] {self._ctrl_label(ctrl)}: live capture "
+                      "failed, using reference snapshot as fallback")
+            else:
+                print(f"    [SNAP] {self._ctrl_label(ctrl)}: snapshot failed "
+                      "and no reference available")
             return
 
         # Remember whether the device was ON or OFF at snapshot time.
@@ -566,6 +707,107 @@ class PumpController:
         snap["was_off"] = self._is_device_off(ctrl["ip"])
         self._save_snapshot(key, snap)
         print(f"    [SNAP] {self._ctrl_label(ctrl)}: original config saved")
+
+    def capture_reference_snapshots(self, force: bool = False) -> int:
+        """
+        Periodically capture each pump's current config as a *reference*
+        snapshot (safety net). Should only be called in nominal mode
+        (mains power, pumps at normal intensity) so we never capture a
+        reduced config as the reference.
+
+        Unlike pre-outage snapshots, references are kept indefinitely and
+        overwritten on each successful capture. Returns the number of
+        devices captured.
+
+        `force=True` bypasses the nominal-mode guard (used by manual tools).
+        """
+        if not force and self.active_level_name != "normal":
+            # Don't capture while we're running a reduced level: that would
+            # poison the reference with the eco/critical config.
+            return 0
+
+        captured = 0
+        for ctrl in self._pump_cfg.get("controllers", []):
+            snap = self._capture_config(ctrl)
+            if snap is None:
+                continue  # device unreachable this round; keep old reference
+            snap["was_off"] = self._is_device_off(ctrl["ip"])
+            snap["captured_at"] = time.time()
+            self._save_reference(ctrl["key"], snap)
+            captured += 1
+        if captured:
+            print(f"[REFERENCE] Captured {captured} pump config(s) as reference")
+        return captured
+
+    def _probe_device(self, ip: str, timeout_s: float = 2.0) -> Optional[str]:
+        """
+        Lightweight reachability probe for one device. Returns the device's
+        reported mode string (e.g. 'auto', 'manual', 'off') if reachable,
+        or None if unreachable. Stays quiet on failure (the health_check
+        caller does the logging) to avoid spamming per-request HTTP errors.
+        """
+        if not REQUESTS_AVAILABLE:
+            return None
+        try:
+            r = requests.get(f"http://{ip}/mode", timeout=timeout_s)
+            if r.ok:
+                data = r.json()
+                if isinstance(data, dict):
+                    return str(data.get("mode", "on"))
+                return "on"
+        except Exception:  # noqa: BLE001 — any failure = unreachable
+            return None
+        return None
+
+    def health_check(self, network_mode: str = "?",
+                     on_battery: bool = False) -> Dict[str, bool]:
+        """
+        Poll every configured device for reachability and log a single
+        summary line. Returns a {label: reachable} map.
+
+        This is the periodic "is everyone OK?" check. It also surfaces the
+        active network mode (client / rejoin / hotspot) so the log shows
+        WHERE we are reaching the devices from — useful to confirm that a
+        hotspot failover actually brought the pumps back.
+        """
+        controllers = self._pump_cfg.get("controllers", [])
+        results: Dict[str, bool] = {}
+        # Shorter timeout on battery to avoid blocking the loop and wasting
+        # energy on slow retries; devices on hotspot answer fast or not at all.
+        timeout_s = 1.5 if on_battery else 2.5
+
+        ok_count = 0
+        details = []
+        seen_ips = {}
+        for ctrl in controllers:
+            ip = ctrl.get("ip")
+            label = self._ctrl_label(ctrl)
+            if not ip:
+                results[label] = False
+                details.append(f"{label}=no-ip")
+                continue
+            # Cache per-IP probe: multi-pump RSRUN share one IP/controller.
+            if ip in seen_ips:
+                mode = seen_ips[ip]
+            else:
+                mode = self._probe_device(ip, timeout_s=timeout_s)
+                seen_ips[ip] = mode
+            reachable = mode is not None
+            results[label] = reachable
+            if reachable:
+                ok_count += 1
+                details.append(f"{label}={mode}")
+            else:
+                details.append(f"{label}=DOWN")
+
+        total = len(results)
+        icon = "✅" if ok_count == total and total > 0 else (
+            "⚠️" if ok_count > 0 else "❌")
+        ctx = "battery" if on_battery else "mains"
+        print(f"[HEALTH] {icon} {ok_count}/{total} devices reachable "
+              f"| net={network_mode} | {ctx} | "
+              + ", ".join(details))
+        return results
 
     def _is_device_off(self, ip: str) -> bool:
         """True iff /mode reports 'off'."""
@@ -723,6 +965,8 @@ class OutageManager:
         if new == PowerState.BATTERY:
             self.outage_start = time.monotonic()
             print("[OUTAGE] === POWER OUTAGE DETECTED ===")
+            # A new outage supersedes any in-flight restore retry.
+            self._pump.stop_restore_retry()
             if self._notifier:
                 capacity = self._cfg.get("battery", {}).get("capacity_ah", 60)
                 runtime = (self.soc / 100 * capacity) / 4.0 if self.soc > 0 else 0

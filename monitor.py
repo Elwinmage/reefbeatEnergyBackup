@@ -86,7 +86,31 @@ class CoulombCounter:
     """
     capacity_ah: float
     soc: float = 100.0
+    # Expected polling interval. Used to clamp dt so an occasional slow
+    # loop iteration (e.g. a blocking BLE read timing out, GC pause, or
+    # heavy system load) cannot inject a huge coulomb-counting step and
+    # make the SoC jump. Set from poll_interval_s by the caller.
+    expected_dt_s: float = 5.0
     _last_time: Optional[float] = field(default=None, repr=False)
+
+    def _clamped_dt_h(self, now: float) -> float:
+        """
+        Return the elapsed time since the last update, in hours, clamped
+        to a sane maximum.
+
+        The coulomb integrator must advance with *physical* time, but the
+        wall-clock gap between two calls also includes any latency in the
+        rest of the main loop (BLE charger reads, MQTT, logging). If one
+        iteration stalls for several seconds, the raw delta would cause a
+        disproportionate SoC step. We cap the delta at 3x the expected
+        poll interval: normal jitter passes through untouched, but a
+        pathological stall is treated as a single normal step.
+        """
+        raw_dt = now - (self._last_time if self._last_time is not None else now)
+        max_dt = max(self.expected_dt_s * 3.0, 1.0)
+        if raw_dt < 0:
+            raw_dt = 0.0  # monotonic clock should never go backwards, be safe
+        return min(raw_dt, max_dt) / 3600.0
 
     def update(self, current: float, voltage: float,
                on_mains: bool = False) -> float:
@@ -117,7 +141,7 @@ class CoulombCounter:
                 # Post-outage active charging: use coulomb counting
                 # (current is negative = charging, SoC increases)
                 if self._last_time is not None:
-                    dt_h = (now - self._last_time) / 3600.0
+                    dt_h = self._clamped_dt_h(now)
                     # current is negative → subtracting a negative = adding
                     self.soc -= (current * dt_h / self.capacity_ah) * 100.0
                     self.soc = max(0.0, min(100.0, self.soc))
@@ -144,15 +168,38 @@ class CoulombCounter:
 
         # On battery: coulomb counting is the primary signal
         if self._last_time is not None:
-            dt_h = (now - self._last_time) / 3600.0
+            dt_h = self._clamped_dt_h(now)
             self.soc -= (current * dt_h / self.capacity_ah) * 100.0
             self.soc = max(0.0, min(100.0, self.soc))
         self._last_time = now
 
-        # Voltage-based anchoring: only at steep ends of LFP curve
-        if voltage > 1.0 and (voltage > 27.20 or voltage < 26.20):
-            target = voltage_to_soc(voltage)
-            self.soc = self.soc * 0.995 + target * 0.005
+        # Voltage-based anchoring: only when the battery is near REST.
+        #
+        # During active discharge (current > 1A), the terminal voltage
+        # drops significantly due to internal resistance (IR drop).
+        # A 120Ah LiFePO4 at 5A discharge can show 26.2V while actually
+        # being at 95%+ SoC — the voltage_to_soc table would say ~30%
+        # which is wildly wrong. The table is calibrated for resting
+        # voltage, not under-load voltage.
+        #
+        # We only apply voltage anchoring when:
+        #   - Current is small (< 0.5A, near rest)
+        #   - AND voltage is at the informative ends of the curve
+        #     (above 27.2V = full, or below 25.0V = nearly empty)
+        #
+        # On the flat plateau (25.0V - 27.2V) with low current, we
+        # still skip because the voltage tells us nothing useful there.
+        is_resting = abs(current) < 0.5
+        if is_resting and voltage > 1.0:
+            if voltage > 27.20:
+                # High end: battery is nearly full
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.995 + target * 0.005
+            elif voltage < 25.0:
+                # Low end: battery is nearly empty — anchor more strongly
+                # to avoid over-discharging
+                target = voltage_to_soc(voltage)
+                self.soc = self.soc * 0.99 + target * 0.01
             self.soc = max(0.0, min(100.0, self.soc))
         return self.soc
 
@@ -237,6 +284,7 @@ class INA226Backend(BatteryMonitorBackend):
         self._counter = CoulombCounter(
             capacity_ah=battery_cfg.get("capacity_ah", 60.0),
             soc=battery_cfg.get("initial_soc", 100.0),
+            expected_dt_s=cfg.get("poll_interval_s", 5.0),
         )
 
     @property
@@ -528,7 +576,12 @@ def create_monitor_backend(
     monitoring_cfg = cfg.get("monitoring", {})
     battery_cfg = cfg.get("battery", {})
 
-    primary = INA226Backend(monitoring_cfg.get("ina226", {}), battery_cfg)
+    # Make the global poll interval available to the INA226 backend so the
+    # coulomb counter can clamp its integration step (see CoulombCounter).
+    ina226_cfg = dict(monitoring_cfg.get("ina226", {}))
+    ina226_cfg.setdefault("poll_interval_s", cfg.get("poll_interval_s", 5.0))
+
+    primary = INA226Backend(ina226_cfg, battery_cfg)
 
     aux: Optional[VictronChargerAux] = None
     victron_cfg = monitoring_cfg.get("victron")

@@ -307,6 +307,20 @@ def main():
         _mains_runtime_h: Optional[float] = None
         _prev_on_mains: bool = True
 
+        # --- Periodic maintenance timers (health check + reference snapshot) ---
+        # Health check: probe all devices and log who's reachable + net mode.
+        # Reference snapshot: capture nominal pump config as a safety net.
+        # Both use monotonic deadlines so a slow loop iteration can't drift them.
+        maint_cfg = cfg.get("maintenance", {})
+        health_interval_mains = float(
+            maint_cfg.get("health_interval_s", 300.0))        # 5 min on mains
+        health_interval_batt = float(
+            maint_cfg.get("health_interval_battery_s", 900.0))  # 15 min on battery
+        reference_interval = float(
+            maint_cfg.get("reference_snapshot_interval_s", 3600.0))  # hourly
+        _next_health = 0.0      # 0 → run on first iteration
+        _next_reference = time.monotonic() + reference_interval
+
         while _running:
             # Read battery (INA226 is fast and reliable)
             on_mains = outage_mgr.power_state == PowerState.MAINS
@@ -321,7 +335,15 @@ def main():
             # Refresh charger telemetry once every N cycles. Between polls
             # we re-inject the previous reading so the user sees a stable
             # value rather than alternating "with/without" data.
-            if victron_aux is not None:
+            #
+            # IMPORTANT: only poll the Victron over BLE when on mains. During
+            # an outage the charger is unpowered and unreachable, so the BLE
+            # scan would block for its full timeout every N cycles. That
+            # stalls the main loop and distorts the coulomb-counter timing
+            # (it used to make the SoC jump). We also drop the last known
+            # charger data so we don't keep logging a stale "charging" line
+            # (e.g. "+6.00A bulk") while mains is actually down.
+            if victron_aux is not None and on_mains:
                 victron_tick += 1
                 if victron_tick >= victron_every_n:
                     victron_tick = 0
@@ -338,6 +360,10 @@ def main():
                     reading.charger_state = last_charger["state"]
                     reading.charger_error = last_charger["error"]
                     reading.charger_source = last_charger["source"]
+            elif victron_aux is not None and not on_mains:
+                # On battery: charger telemetry is meaningless/unreachable.
+                last_charger = None
+                victron_tick = 0
 
             # Feed monitor-based detector if used
             from outage import MonitorDetector
@@ -459,6 +485,32 @@ def main():
                     line += f" {cc:+.2f}A"
                 line += f" {reading.charger_state}"
             print(line)
+
+            # --- Periodic maintenance (deadline-based) ---
+            mono = time.monotonic()
+
+            # Health check: probe devices and log reachability + net mode.
+            # Spaced out further while on battery to save energy.
+            if mono >= _next_health:
+                try:
+                    outage_mgr._pump.health_check(
+                        network_mode=status.get("network_mode", "?"),
+                        on_battery=not on_mains,
+                    )
+                except Exception as e:  # never let maintenance kill the loop
+                    print(f"[HEALTH] check failed: {e}")
+                interval = health_interval_mains if on_mains \
+                    else health_interval_batt
+                _next_health = mono + interval
+
+            # Reference snapshot: only on mains and in nominal mode, so we
+            # always keep a recent known-good config as a safety net.
+            if on_mains and mono >= _next_reference:
+                try:
+                    outage_mgr._pump.capture_reference_snapshots()
+                except Exception as e:
+                    print(f"[REFERENCE] capture failed: {e}")
+                _next_reference = mono + reference_interval
 
             time.sleep(poll_interval)
 
