@@ -189,6 +189,12 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 
 > ⚠️ **Safety**: a **15A fuse** on the battery + pole, right after the battery, is mandatory. This rating matches the 2.5 mm² cable capacity (~16A max) and provides comfortable margin against typical peak consumption of ~9A (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). In case of a short circuit on the load side, this is what saves the battery (and your house).
 
+> 🔧 **TO DO after switching to battery — recalibrate the skimmer probes**
+>
+> The supply voltage on the 24 V LiFePO4 battery (≈ 24 to 28 V depending on SoC) is **not the same** as the original Red Sea transformer. Since the skimmer motor speed depends directly on voltage, the air flow and the water level in the cup change once running on battery.
+>
+> **After connecting to the battery, recalibrate the skimmer probes / settings** (operating point and overflow level) for the new voltage, otherwise the cup may overflow or skimming may become ineffective. Recalibrate at the supply actually used in normal operation (battery floating or transformer, depending on your setup).
+
 #### ✅ What you get
 
 - Power continuity during outages (autonomy ~6-12h depending on your pumps)
@@ -414,6 +420,8 @@ If you don't want to buy a USB modem, you can use a **smartphone connected via U
 **Pros**: no extra hardware to buy, uses your existing phone and data plan. The phone is powered via USB from the RPi (which is on battery), so it stays charged during the outage.
 
 **Cons**: USB tethering may need to be re-enabled after a phone reboot, and the phone must stay physically connected. The E3372h is fully autonomous and always ready.
+
+> ℹ️ **Automatic routing priority**: during configuration, the wizard pins a **high metric (700)** on the tethering interface (`usb0`) in `/etc/dhcpcd.conf`. Without this, dhcpcd may give `usb0` a low metric (100) and route **all** of the RPi's traffic over 4G even on mains power — needlessly burning through your data plan. With metric 700, 4G stays a backup behind Ethernet (`eth0`) and Wi-Fi (`wlan0`), used only if both go down. The setting is applied live *and* persisted for future connections.
 
 #### ✅ What you get
 
@@ -703,14 +711,16 @@ Is "user" detected at home?
 
 ### Blueprint installation
 
-The blueprint is provided in the repo under [`blueprints/reef_battery_test.yaml`](blueprints/reef_battery_test.yaml).
-
-To install in HA:
-
-1. Copy the file to `<config>/blueprints/automation/reefbeat/reef_battery_test.yaml`
-2. Reload blueprints in HA (Settings → Automations → ⋮ → Reload)
-3. Create a new automation from this blueprint
-4. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
+1. In Home Assistant, go to **Settings → Automations & Scenes → Blueprints**
+2. Click **Import Blueprint** (bottom right)
+3. Paste this URL:
+   ```
+   https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/refs/heads/main/blueprints/reef_battery_test.yaml
+   ```
+4. Click **Preview** then **Import**
+5. Go to **Automations → + Create Automation → Use a Blueprint**
+6. Select **reefbeat⚡Backup — Battery Test**
+7. Fill in: schedule, person, notification service, breaker switch, SoC/voltage/power sensors, battery capacity, test duration, tolerance, emergency voltage threshold
 
 ### Important precautions
 
@@ -736,6 +746,7 @@ hotspot.py                          3-level network failover
 controller.py                       Pump control + outage orchestration
 notifier.py                         Push notifications (ntfy.sh + 4G LTE)
 test_notif.py                       CLI notification tester
+test_reefbeat.py                    CLI ReefBeat equipment tester
 updater.py                          Self-update module (GitHub + HA update entity)
 update.py                           CLI update tool
 VERSION                             Current version number
@@ -756,6 +767,9 @@ blueprints/
 | Command | Description |
 |---------|-------------|
 | `python3 configure.py` | Reconfigure (re-run the wizard) |
+| `python3 test_reefbeat.py` | Test ReefBeat device communication |
+| `python3 test_reefbeat.py --read` | Read current state of all devices |
+| `python3 test_reefbeat.py --test-all` | Full test cycle (read → change → verify → restore) |
 | `python3 test_notif.py` | Test push notifications |
 | `python3 update.py` | Check for updates |
 | `python3 update.py --install` | Install available update |
@@ -807,6 +821,30 @@ python3 update.py --force
 # Show current version
 python3 update.py --version
 ```
+
+---
+
+## ⚠️ Important: ReefWave and cloud synchronization
+
+> **ReefWave devices are "cloud-slave"** — they are the only ReefBeat devices controlled by the Red Sea cloud rather than locally.
+
+When reefbeat⚡Backup changes a ReefWave's wave program during an outage (reducing intensity, switching to uniform flow), it uses the **local HTTP API** which works perfectly — the device changes its behavior immediately.
+
+However, the **Red Sea cloud and mobile app are unaware of this change**. The cloud still believes the ReefWave is running its original schedule. This means:
+
+**During an outage:**
+- ✅ The ReefWave physically runs at the reduced intensity (local API works)
+- ✅ Home Assistant sees the correct state (reads from the device directly)
+- ⚠️ The ReefBeat mobile app shows the old schedule (reads from the cloud)
+
+**When power is restored:**
+- ✅ reefbeat⚡Backup restores the original wave program from its snapshot
+- ✅ The device, Home Assistant, and the mobile app are all back in sync
+- ✅ No manual intervention needed
+
+**In practice**, this is not a problem: during an outage, you're not managing wave programs from the app anyway. The important thing is that the pumps physically run at the right intensity, and that everything is restored correctly when power returns.
+
+> 💡 This limitation only affects ReefWave. ReefRun (return pumps, skimmers) are controlled locally and stay in sync with the app at all times.
 
 ---
 

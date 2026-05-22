@@ -288,8 +288,76 @@ except ImportError:
     HAS_REQUESTS = False
 
 
+# Interface name prefixes we never want to scan for ReefBeat devices.
+# usb*/ppp*/wwan*/rmnet* = USB tethering or 4G/LTE dongle (the WAN side),
+# uap*/ap* = our own captive hotspot, lo = loopback. ReefBeat pumps live on
+# the LAN (Ethernet or home Wi-Fi), never on these.
+_SCAN_EXCLUDED_IFACE_PREFIXES = (
+    "lo", "usb", "ppp", "wwan", "rmnet", "uap", "ap", "docker", "veth", "br-",
+)
+
+# Preferred scan order: wired first (more reliable), then Wi-Fi.
+_SCAN_IFACE_ORDER = ("eth", "en", "wlan", "wl")
+
+
+def _iface_ipv4_subnet(iface: str) -> Optional[str]:
+    """Return the IPv4 CIDR (e.g. '192.168.0.12/24') bound to an interface."""
+    try:
+        import netifaces  # local import: optional dependency
+        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
+        for a in addrs:
+            ip = a.get("addr")
+            netmask = a.get("netmask")
+            if not ip or not netmask or ip.startswith("169.254."):
+                continue  # skip link-local / unconfigured
+            prefix = ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
+            return f"{ip}/{prefix}"
+    except Exception:
+        pass
+    return None
+
+
+def _list_lan_interfaces() -> List[str]:
+    """List candidate LAN interfaces, wired first then Wi-Fi, tethering excluded."""
+    try:
+        import netifaces
+        all_ifaces = netifaces.interfaces()
+    except Exception:
+        return []
+
+    # Keep only LAN-eligible interfaces.
+    candidates = [
+        i for i in all_ifaces
+        if not i.startswith(_SCAN_EXCLUDED_IFACE_PREFIXES)
+    ]
+
+    # Sort by our preferred order; unknown names go last but are still kept.
+    def order_key(name: str) -> int:
+        for idx, prefix in enumerate(_SCAN_IFACE_ORDER):
+            if name.startswith(prefix):
+                return idx
+        return len(_SCAN_IFACE_ORDER)
+
+    return sorted(candidates, key=order_key)
+
+
 def get_local_subnet() -> Optional[str]:
-    """Detect local subnet CIDR."""
+    """
+    Detect the LAN subnet CIDR to scan for ReefBeat devices.
+
+    We deliberately do NOT follow the default route here: when 4G/USB
+    tethering failover is active, the default route can point at usb0, and
+    scanning that subnet would never find the pumps. Instead we enumerate
+    real LAN interfaces (Ethernet first, then Wi-Fi) and return the first
+    one that has a usable IPv4 address.
+    """
+    for iface in _list_lan_interfaces():
+        subnet = _iface_ipv4_subnet(iface)
+        if subnet:
+            return subnet
+
+    # Fallback: legacy default-route detection (better than nothing if
+    # netifaces is unavailable or no LAN iface matched).
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
@@ -453,6 +521,109 @@ def scan_reefbeat_devices() -> List[Dict]:
             devices.append(r)
 
     return devices
+
+
+# =============================================================================
+# Default-route priority for the 4G/LTE backup interface
+# =============================================================================
+
+# dhcpcd installs a default route per interface using a "metric". The lowest
+# metric wins. We force a HIGH metric on the 4G/LTE interface so it always
+# loses against Ethernet/Wi-Fi and is only used when both are down. Without
+# this, USB tethering (usb0) can grab metric 100 and capture ALL outgoing
+# traffic even while mains/ADSL is up.
+DHCPCD_CONF = "/etc/dhcpcd.conf"
+DHCPCD_MARK_BEGIN = "# >>> reefbeat-backup: 4G backup metric (managed) >>>"
+DHCPCD_MARK_END = "# <<< reefbeat-backup: 4G backup metric (managed) <<<"
+LTE_BACKUP_METRIC = 700  # higher than typical eth0 (~100) and wlan0 (~600)
+
+
+def set_lte_backup_metric(iface: str, metric: int = LTE_BACKUP_METRIC) -> bool:
+    """
+    Pin a high default-route metric on the 4G/LTE interface in dhcpcd.conf,
+    so it stays a backup behind Ethernet/Wi-Fi.
+
+    Writes an idempotent, marker-delimited block: re-running configuration
+    rewrites the same block instead of appending duplicates. Also applies the
+    metric live (best effort) so the running system is fixed without a reboot.
+    Requires root to persist; falls back to printing manual instructions.
+    """
+    block = (
+        f"{DHCPCD_MARK_BEGIN}\n"
+        f"interface {iface}\n"
+        f"    metric {metric}\n"
+        f"{DHCPCD_MARK_END}\n"
+    )
+
+    # --- Persist to dhcpcd.conf (idempotent block replacement) ---
+    persisted = False
+    try:
+        existing = ""
+        if Path(DHCPCD_CONF).exists():
+            existing = Path(DHCPCD_CONF).read_text()
+
+        if DHCPCD_MARK_BEGIN in existing and DHCPCD_MARK_END in existing:
+            # Replace the managed block in place
+            pattern = re.compile(
+                re.escape(DHCPCD_MARK_BEGIN) + r".*?" + re.escape(DHCPCD_MARK_END) + r"\n?",
+                re.DOTALL,
+            )
+            new_content = pattern.sub(block, existing)
+        else:
+            sep = "" if existing.endswith("\n") or existing == "" else "\n"
+            new_content = f"{existing}{sep}\n{block}"
+
+        Path(DHCPCD_CONF).write_text(new_content)
+        persisted = True
+        ok(t(
+            f"Métrique de secours {metric} appliquée à {iface} dans dhcpcd.conf",
+            f"Backup metric {metric} set for {iface} in dhcpcd.conf",
+        ))
+    except PermissionError:
+        warn(t(
+            f"Pas les droits pour écrire {DHCPCD_CONF} — relancez en root (sudo).",
+            f"No permission to write {DHCPCD_CONF} — re-run as root (sudo).",
+        ))
+    except Exception as e:
+        warn(t(f"Impossible de configurer dhcpcd.conf : {e}",
+               f"Cannot configure dhcpcd.conf: {e}"))
+
+    if not persisted:
+        info(t(
+            f"Ajoutez manuellement dans {DHCPCD_CONF} :",
+            f"Add manually to {DHCPCD_CONF}:",
+        ))
+        info(f"    interface {iface}")
+        info(f"    metric {metric}")
+
+    # --- Apply live (best effort): rewrite the current default route ---
+    try:
+        route_res = subprocess.run(
+            ["ip", "route", "show", "default", "dev", iface],
+            capture_output=True, text=True, timeout=5,
+        )
+        # e.g. "default via 192.168.42.129 dev usb0 metric 100"
+        m = re.search(r"default\s+via\s+(\S+)", route_res.stdout)
+        if m:
+            gw = m.group(1)
+            subprocess.run(
+                ["sudo", "ip", "route", "del", "default", "via", gw, "dev", iface],
+                capture_output=True, timeout=5,
+            )
+            subprocess.run(
+                ["sudo", "ip", "route", "add", "default", "via", gw,
+                 "dev", iface, "metric", str(metric)],
+                capture_output=True, timeout=5,
+            )
+            info(t(
+                f"Route par défaut de {iface} repassée en métrique {metric} (à chaud).",
+                f"{iface} default route re-prioritized to metric {metric} (live).",
+            ))
+    except Exception:
+        # Non-fatal: dhcpcd will apply it on the next lease/reboot anyway.
+        pass
+
+    return persisted
 
 
 # =============================================================================
@@ -2301,6 +2472,12 @@ def _step8_notifications(cfg: dict, defaults: dict):
                            "Cannot test connectivity."))
 
                 lte_interface = tether_iface
+
+                # Pin a high default-route metric so this tethering interface
+                # stays a backup behind Ethernet/Wi-Fi (otherwise dhcpcd may
+                # give usb0 metric 100 and capture all traffic on mains too).
+                print()
+                set_lte_backup_metric(tether_iface)
             else:
                 warn(t(
                     "Aucune interface tethering détectée.",
@@ -2314,6 +2491,11 @@ def _step8_notifications(cfg: dict, defaults: dict):
                     "L'interface sera détectée automatiquement au démarrage du service.",
                     "The interface will be auto-detected when the service starts."
                 ))
+
+                # Pre-configure the metric on the expected interface (usb0) so
+                # it is already correct the moment the phone is plugged in.
+                print()
+                set_lte_backup_metric("usb0")
 
             input(f"\n  {C.BOLD}⏎{C.END} " + t(
                 "Appuyez sur Entrée pour continuer...",

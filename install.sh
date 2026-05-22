@@ -176,6 +176,12 @@ else
     rm -rf "${TMP_DIR}"
 fi
 
+# Make entry-point scripts executable (lost on tarball extraction / git clone)
+chmod +x "${INSTALL_DIR}/main.py" 2>/dev/null || true
+for _script in configure.py ble_scan.py update.py test_notif.py test_reefbeat.py; do
+    [ -f "${INSTALL_DIR}/${_script}" ] && chmod +x "${INSTALL_DIR}/${_script}" 2>/dev/null || true
+done
+
 # Install Python dependencies
 echo ""
 echo -e "${BLUE}${MSG_PIP}${NC}"
@@ -239,7 +245,6 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICEEOF
 
-    chmod +x ${SERVICE_FILE}
     # Disable hostapd and dnsmasq (we manage them manually)
     systemctl disable hostapd 2>/dev/null || true
     systemctl stop hostapd 2>/dev/null || true
