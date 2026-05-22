@@ -422,6 +422,30 @@ If you don't want to buy a USB modem, you can use a **smartphone connected via U
 
 **Cons**: USB tethering may need to be re-enabled after a phone reboot, and the phone must stay physically connected. The E3372h is fully autonomous and always ready.
 
+> ⚠️ **Important limitation — tethering lost on RPi reboot**: most smartphones (Android and iPhone alike) **automatically disable USB tethering as soon as the USB link is cut or reset**. An RPi reboot resets the USB bus, so when it comes back the phone has dropped tethering and the `usb0` interface does not reappear. This is intentional behaviour in the phone's OS, not a bug in the project — and it cannot be worked around from the RPi side.
+>
+> To diagnose after a reboot (without touching the phone):
+> ```bash
+> ip link show        # does usb0 appear?
+> ip addr show usb0   # does it have an IP?
+> ```
+> - `usb0` **missing** → the phone dropped tethering. Only fixes: re-enable USB tethering manually on the phone, use an auto-re-enable app (Tasker / "USB Tether Auto" on Android, reliability varies by model), or switch to the E3372h dongle.
+> - `usb0` **present but no IP** → the phone is still tethering but the RPi didn't reconfigure the interface; this is fixable on the RPi side (re-run `dhcpcd`/`dhclient` on `usb0`).
+>
+> 🛠️ **Android fix — automatic tethering re-enable (`usb0` missing case)**
+>
+> Most Android phones can force **USB tethering** as the default USB mode via the **developer options**. The phone then automatically re-enables tethering as soon as the RPi reconnects (after a reboot, for example), with no manual action:
+>
+> 1. **Enable developer options**: *Settings → About phone* → tap **Build number** **7 times** (a "You are now a developer" message appears).
+> 2. Open *Settings → System → Developer options* (exact location varies by manufacturer).
+> 3. Find **Default USB configuration** and select **USB tethering** (depending on the skin: "USB tethering", "Tethering", etc.).
+> 4. Optional: if present, also enable **Tethering hardware acceleration**.
+> 5. Leave the phone plugged into the RPi. On the next RPi reboot, tethering should come back on its own.
+>
+> ⚠️ The wording and location of these settings **vary by Android version and manufacturer** (Samsung/One UI, Pixel, Xiaomi…). On some skins the setting doesn't fully "stick" after a system update — test it by doing a real RPi reboot and checking with `ip addr show usb0`. If it doesn't hold on your model, the E3372h dongle remains the safest option.
+>
+> 🔑 **Recommendation**: for **reliable, unattended** failover, prefer the **Huawei E3372h** dongle. In HiLink mode it is fully autonomous, resets itself, and survives RPi reboots without issue. Smartphone tethering is only an acceptable stopgap if you can re-enable tethering manually, or if the RPi never reboots unattended.
+
 > ℹ️ **Automatic routing priority**: during configuration, the wizard pins a **high metric (700)** on the tethering interface (`usb0`) in `/etc/dhcpcd.conf`. Without this, dhcpcd may give `usb0` a low metric (100) and route **all** of the RPi's traffic over 4G even on mains power — needlessly burning through your data plan. With metric 700, 4G stays a backup behind Ethernet (`eth0`) and Wi-Fi (`wlan0`), used only if both go down. The setting is applied live *and* persisted for future connections.
 
 #### ✅ What you get

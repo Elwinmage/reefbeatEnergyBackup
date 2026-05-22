@@ -390,6 +390,30 @@ Si vous ne souhaitez pas acheter un modem USB, vous pouvez utiliser un **smartph
 
 **Inconvénients** : le partage USB peut devoir être réactivé après un redémarrage du téléphone, et le téléphone doit rester physiquement connecté. L'E3372h est totalement autonome et toujours prêt.
 
+> ⚠️ **Limitation importante — perte du tethering au reboot du RPi** : la plupart des smartphones (Android comme iPhone) **désactivent automatiquement le partage de connexion USB dès que le lien USB est coupé ou réinitialisé**. Or un redémarrage du RPi réinitialise le bus USB : au retour, le téléphone a coupé le partage et l'interface `usb0` ne réapparaît pas. C'est un comportement volontaire du système d'exploitation du téléphone, pas un bug du projet — et il ne peut pas être contourné depuis le RPi.
+>
+> Pour diagnostiquer après un reboot (sans toucher au téléphone) :
+> ```bash
+> ip link show        # usb0 apparaît-il ?
+> ip addr show usb0   # a-t-il une IP ?
+> ```
+> - `usb0` **absent** → le téléphone a coupé le partage. Seules solutions : réactiver manuellement le partage USB sur le téléphone, utiliser une app de réactivation automatique (Tasker / « USB Tether Auto » sur Android, fiabilité variable selon le modèle), ou passer sur la clé E3372h.
+> - `usb0` **présent mais sans IP** → le téléphone tient le partage mais le RPi n'a pas reconfiguré l'interface ; ce cas se règle côté RPi (relance de `dhcpcd`/`dhclient` sur `usb0`).
+>
+> 🛠️ **Solution Android — réactivation automatique du tethering (cas `usb0` absent)**
+>
+> La plupart des Android permettent de forcer le **partage de connexion USB** comme mode USB par défaut, via les **options pour développeurs**. Ainsi, le téléphone réactive automatiquement le tethering dès que le RPi se reconnecte (après un reboot, par exemple), sans intervention manuelle :
+>
+> 1. **Activer les options pour développeurs** : *Paramètres → À propos du téléphone* → tapez **7 fois** sur **Numéro de build** (un message « Vous êtes maintenant développeur » apparaît).
+> 2. Ouvrez *Paramètres → Système → Options pour développeurs* (l'emplacement exact varie selon le constructeur).
+> 3. Cherchez **Configuration USB par défaut** et sélectionnez **Partage de connexion par USB** (selon la surcouche : « USB tethering », « Connexion USB », etc.).
+> 4. Optionnel : si présent, activez aussi **Accélération matérielle du tethering**.
+> 5. Laissez le téléphone branché au RPi. Au prochain reboot du RPi, le tethering doit revenir tout seul.
+>
+> ⚠️ Le libellé et l'emplacement de ces réglages **varient selon la version d'Android et le constructeur** (Samsung/One UI, Pixel, Xiaomi…). Sur certaines surcouches, le réglage ne « tient » pas parfaitement après une mise à jour système — testez en faisant un vrai reboot du RPi et en vérifiant avec `ip addr show usb0`. Si ça ne tient pas sur votre modèle, la clé E3372h reste la solution la plus sûre.
+>
+> 🔑 **Recommandation** : pour un secours **fiable et non surveillé**, préférez la clé **Huawei E3372h**. En mode HiLink, elle est totalement autonome, se réinitialise seule et survit sans problème aux redémarrages du RPi. Le tethering smartphone reste une solution de dépannage acceptable uniquement si vous pouvez réactiver le partage manuellement, ou si le RPi ne redémarre jamais sans surveillance.
+
 > ℹ️ **Priorité de routage automatique** : lors de la configuration, le wizard force une **métrique haute (700)** sur l'interface tethering (`usb0`) dans `/etc/dhcpcd.conf`. Sans ça, dhcpcd peut donner à `usb0` une métrique basse (100) et faire passer **tout** le trafic du RPi par la 4G, même sur secteur — ce qui consomme inutilement votre forfait data. Avec la métrique 700, la 4G reste un secours derrière l'Ethernet (`eth0`) et le Wi-Fi (`wlan0`), et n'est utilisée que si les deux tombent. Le réglage est appliqué à chaud *et* persisté pour les prochains branchements.
 
 #### ✅ Ce que vous obtenez
