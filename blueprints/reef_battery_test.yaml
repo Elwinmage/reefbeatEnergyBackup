@@ -206,6 +206,73 @@ blueprint:
           step: 0.1
           unit_of_measurement: V
 
+    # ----------------------------------------------------------------
+    # Pump command test (optional, quick functional check)
+    # ----------------------------------------------------------------
+    run_pump_command_test:
+      name: Verify pump commands before the discharge test
+      description: >
+        Before opening the breaker, briefly switch the pumps to the
+        service's functional test level (reduced speed, and one pump off
+        if you configured per_device), hold it for a few seconds so you
+        can confirm the pumps actually react, then restore them. This
+        checks the control path end-to-end. No outage needed for this
+        step. Requires 'test_level' configured in the service and the
+        "Test commandes pompes" switch entity.
+      default: false
+      selector:
+        boolean:
+
+    test_plan_switch:
+      name: Pump command test switch entity
+      description: >
+        The switch exposed by the service
+        (switch.<device>_test_plan). Only used when the option above is
+        enabled.
+      default: switch.reef_battery_test_plan
+      selector:
+        entity:
+          domain: switch
+
+    pump_test_hold_seconds:
+      name: How long to hold the test level (seconds)
+      description: >
+        Time to keep the pumps at the test level so you can observe the
+        speed change / pump-off before they are restored.
+      default: 15
+      selector:
+        number:
+          min: 3
+          max: 120
+          step: 1
+          unit_of_measurement: s
+
+    wifi_cut_minutes:
+      name: Wi-Fi cut during test (minutes, 0 = none)
+      description: >
+        Optionally cut the Pi's Wi-Fi for this many minutes during the
+        test to observe the network failover (client → rejoin → hotspot)
+        and the notification path. 0 disables it. The link is always
+        restored automatically, even if the cut value is left non-zero.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          unit_of_measurement: min
+
+    wifi_cut_number:
+      name: Wi-Fi cut number entity
+      description: >
+        The number entity exposed by the service
+        (number.<device>_wifi_cut_min). Only used when the minutes above
+        are greater than 0.
+      default: number.reef_battery_wifi_cut_min
+      selector:
+        entity:
+          domain: number
+
 # Variables propagate the inputs so subsequent steps can read them
 # through plain Jinja templates -- !input cannot be used directly
 # inside {{ }} expressions in actions/conditions.
@@ -222,6 +289,11 @@ variables:
   v_soc_sensor_id: !input soc_sensor
   v_voltage_sensor_id: !input voltage_sensor
   v_power_sensor_id: !input power_sensor
+  v_use_test_plan: !input run_pump_command_test
+  v_test_plan_switch_id: !input test_plan_switch
+  v_pump_test_hold_s: !input pump_test_hold_seconds
+  v_wifi_cut_minutes: !input wifi_cut_minutes
+  v_wifi_cut_number_id: !input wifi_cut_number
 
 trigger:
   # Fire at the chosen time every day; conditions filter for the right
@@ -344,12 +416,46 @@ action:
         {{ ((wh_consumed / (v_battery_capacity_wh | float)) * 100) | round(1) }}
 
   # ------------------------------------------------------------------
-  # 3. Run the test
+  # 3. Optional: quick pump-command functional check (no outage)
+  # ------------------------------------------------------------------
+  - alias: Run the pump command test (apply test level, hold, restore)
+    if:
+      - condition: template
+        value_template: "{{ v_use_test_plan }}"
+    then:
+      - alias: Apply the functional test level
+        service: switch.turn_on
+        target:
+          entity_id: "{{ v_test_plan_switch_id }}"
+      - alias: Hold so the speed change / pump-off is observable
+        delay:
+          seconds: "{{ v_pump_test_hold_s | int }}"
+      - alias: Restore pumps (turn test mode off)
+        service: switch.turn_off
+        target:
+          entity_id: "{{ v_test_plan_switch_id }}"
+      - alias: Give the pumps a moment to settle back before discharge
+        delay:
+          seconds: 5
+
+  # ------------------------------------------------------------------
+  # 4. Run the discharge test
   # ------------------------------------------------------------------
   - alias: Open the breaker (simulate outage)
     service: switch.turn_off
     target:
       entity_id: !input breaker_switch
+
+  - alias: Optionally cut Wi-Fi to exercise the network failover
+    if:
+      - condition: template
+        value_template: "{{ (v_wifi_cut_minutes | float(0)) > 0 }}"
+    then:
+      - service: number.set_value
+        target:
+          entity_id: "{{ v_wifi_cut_number_id }}"
+        data:
+          value: "{{ v_wifi_cut_minutes }}"
 
   - alias: Wait for the duration, abort early on voltage floor breach
     wait_for_trigger:
@@ -366,7 +472,7 @@ action:
       entity_id: !input breaker_switch
 
   # ------------------------------------------------------------------
-  # 4. Three-axis analysis
+  # 5. Three-axis analysis
   # ------------------------------------------------------------------
   - variables:
       aborted_early: "{{ wait.trigger is not none }}"

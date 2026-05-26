@@ -14,6 +14,7 @@ import json
 import signal
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -59,12 +60,36 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
     # we re-establish quickly when the broker (or its host) comes back.
     client.reconnect_delay_set(min_delay=1, max_delay=60)
 
+    # Command routing: topics the service subscribes to (HA -> service),
+    # filled in after the pump controller exists via wire_test_commands().
+    # Stored on the client's user_data so the (re)connect callback can
+    # re-subscribe on every reconnection.
+    command_handlers: dict = {}
+    client.user_data_set({"command_handlers": command_handlers})
+
     def _on_connect(c, userdata, flags, rc, props=None):
         if rc == 0:
             print(f"[MQTT] Connected to {host}:{port}")
             buffer.notify_connected()
+            # (Re)subscribe to all registered command topics.
+            handlers = (userdata or {}).get("command_handlers", {})
+            for topic in handlers:
+                c.subscribe(topic)
+            if handlers:
+                print(f"[MQTT] Subscribed to {len(handlers)} command topic(s)")
         else:
             print(f"[MQTT] Connection refused (rc={rc})")
+
+    def _on_message(c, userdata, msg):
+        handlers = (userdata or {}).get("command_handlers", {})
+        handler = handlers.get(msg.topic)
+        if handler is None:
+            return
+        try:
+            payload = msg.payload.decode("utf-8", errors="replace").strip()
+            handler(payload)
+        except Exception as e:  # noqa: BLE001 — never let a bad msg crash us
+            print(f"[MQTT] command handler error on {msg.topic}: {e}")
 
     def _on_disconnect(c, userdata, *args, **kwargs):
         # paho calls this on graceful disconnect AND on broker drop.
@@ -73,6 +98,7 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
 
     client.on_connect = _on_connect
     client.on_disconnect = _on_disconnect
+    client.on_message = _on_message
 
     # connect_async: returns immediately even if the broker is down.
     # The actual connection attempt happens inside loop_start()'s thread
@@ -162,6 +188,134 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         time.sleep(0.05)
 
     print(f"[MQTT] Queued {len(sensors)} HA discovery configs")
+
+
+def wire_test_commands(client, buffer: "MqttBuffer", cfg: dict,
+                       pump, network) -> None:
+    """
+    Register MQTT command handlers + publish HA control entities used by
+    the test blueprint:
+
+      * a switch to toggle the TEST autonomy plan (tight thresholds so a
+        real discharge crosses normal/eco/survival within minutes), and
+      * a number to cut Wi-Fi for N minutes (0 = no cut) to observe the
+        network failover.
+
+    Safe no-op if MQTT is unavailable. Defaults keep a normal run
+    unaffected (test plan off, Wi-Fi cut 0).
+    """
+    if client is None:
+        return
+
+    mqtt_cfg = cfg.get("mqtt", {})
+    device_name = mqtt_cfg.get("device_name", "reef_battery")
+    base = mqtt_cfg.get("base_topic", "homeassistant")
+    device_info = {"identifiers": [device_name], "name": "Reef Battery Backup"}
+
+    # paho stores user_data internally; fetch via the documented accessor.
+    ud = client.user_data_get() or {}
+    handlers = ud.get("command_handlers", {})
+
+    # --- Switch: TEST autonomy plan -------------------------------------
+    sw_uid = f"{device_name}_test_plan"
+    sw_cmd = f"{base}/switch/{device_name}/test_plan/set"
+    sw_state = f"{base}/switch/{device_name}/test_plan/state"
+
+    def _on_test_plan(payload: str):
+        enabled = payload.strip().upper() in ("ON", "1", "TRUE")
+        pump.set_test_plan(enabled)
+        buffer.publish(sw_state, "ON" if pump.test_plan_active else "OFF",
+                       retain=True)
+
+    handlers[sw_cmd] = _on_test_plan
+    if client.is_connected():
+        client.subscribe(sw_cmd)
+    buffer.publish(f"{base}/switch/{sw_uid}/config", json.dumps({
+        "name": "Test commandes pompes",
+        "unique_id": sw_uid,
+        "command_topic": sw_cmd,
+        "state_topic": sw_state,
+        "icon": "mdi:test-tube",
+        "device": device_info,
+    }), retain=True)
+    buffer.publish(sw_state, "ON" if pump.test_plan_active else "OFF",
+                   retain=True)
+
+    # --- Number: timed Wi-Fi cut ----------------------------------------
+    num_uid = f"{device_name}_wifi_cut_min"
+    num_cmd = f"{base}/number/{device_name}/wifi_cut/set"
+    num_state = f"{base}/number/{device_name}/wifi_cut/state"
+
+    def _on_wifi_cut(payload: str):
+        try:
+            minutes = float(payload)
+        except ValueError:
+            return
+        # Echo the requested value, then reset to 0 once the cut starts so
+        # the HA control returns to idle.
+        buffer.publish(num_state, str(minutes), retain=True)
+        if minutes > 0:
+            network.cut_wifi_for(minutes)
+        buffer.publish(num_state, "0", retain=True)
+
+    handlers[num_cmd] = _on_wifi_cut
+    if client.is_connected():
+        client.subscribe(num_cmd)
+    buffer.publish(f"{base}/number/{num_uid}/config", json.dumps({
+        "name": "Coupure Wi-Fi (test, min)",
+        "unique_id": num_uid,
+        "command_topic": num_cmd,
+        "state_topic": num_state,
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "mode": "box",
+        "unit_of_measurement": "min",
+        "icon": "mdi:wifi-off",
+        "device": device_info,
+    }), retain=True)
+    buffer.publish(num_state, "0", retain=True)
+
+    # --- Button: run the pump command test on demand ---------------------
+    # One-tap functional check: apply the test level, hold for a configured
+    # number of seconds, then restore. Runs entirely service-side in a
+    # background thread so the restore is guaranteed even if HA disconnects
+    # mid-test. Independent of the monthly discharge blueprint.
+    btn_uid = f"{device_name}_test_pumps"
+    btn_cmd = f"{base}/button/{device_name}/test_pumps/press"
+    hold_s = float(cfg.get("pump_control", {})
+                   .get("test_hold_seconds", 15.0))
+
+    def _on_test_pumps(_payload: str):
+        if not pump._resolver.has_test_level:
+            print("[TEST] Button pressed but no 'test_level' configured")
+            return
+
+        def _worker():
+            print(f"[TEST] On-demand pump test: apply test level, "
+                  f"hold {hold_s:.0f}s, then restore")
+            try:
+                pump.set_test_plan(True)
+                time.sleep(hold_s)
+            finally:
+                # Always restore, even if something throws during the hold.
+                pump.set_test_plan(False)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    handlers[btn_cmd] = _on_test_pumps
+    if client.is_connected():
+        client.subscribe(btn_cmd)
+    buffer.publish(f"{base}/button/{btn_uid}/config", json.dumps({
+        "name": "Tester les commandes pompes",
+        "unique_id": btn_uid,
+        "command_topic": btn_cmd,
+        "icon": "mdi:pump",
+        "device": device_info,
+    }), retain=True)
+
+    print("[MQTT] Test control entities published "
+          "(test switch + Wi-Fi cut + pump-test button)")
 
 
 # =============================================================================
@@ -256,6 +410,12 @@ def main():
 
     # --- Outage manager ---
     outage_mgr = OutageManager(pump, network, cfg, notifier=notifier)
+
+    # --- Test control entities (test autonomy plan + timed Wi-Fi cut) ---
+    # Lets the test blueprint exercise level changes and network failover
+    # without waiting hours for a real discharge. No-op without MQTT.
+    if mqtt_client:
+        wire_test_commands(mqtt_client, mqtt_buffer, cfg, pump, network)
 
     # --- Updater (background GitHub version check + HA update entity) ---
     install_dir = str(Path(__file__).parent)

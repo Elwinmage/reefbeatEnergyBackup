@@ -52,7 +52,13 @@
         "global_intensity": 30,
         "per_device": {}
       }
-    }
+    },
+    "test_level": {
+      "global_intensity": 40,
+      "per_device": {},
+      "_comment": "Functional test level: applied immediately when the 'Test commandes pompes' switch is turned ON (no outage needed), removed on OFF. global_intensity sets the test speed for all pumps; use per_device to force a specific pump off or to a specific speed, e.g. {\"RSWAVE45-3974704013\": 0} turns that pump OFF. Use your real pump keys (see logs / controllers)."
+    },
+    "test_hold_seconds": 15
   },
   "mqtt": {
     "host": "localhost",

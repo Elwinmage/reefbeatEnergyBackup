@@ -76,19 +76,39 @@ class IntensityResolver:
     """
 
     def __init__(self, cfg: dict):
-        levels_cfg = cfg.get("pump_control", {}).get("levels", {})
+        pump_cfg = cfg.get("pump_control", {})
+        levels_cfg = pump_cfg.get("levels", {})
 
-        self._levels = []
+        self._levels = self._build_levels(levels_cfg)
+
+        # Optional single TEST level. Its only purpose is to verify that
+        # the service can actually drive the pumps: change their speed and
+        # turn one off. It is NOT a SoC-resolved plan -- it is applied
+        # directly when the test switch is turned on (no outage needed) and
+        # removed when it is turned off. See PumpController.set_test_plan.
+        test_cfg = pump_cfg.get("test_level")
+        self._test_level = (
+            IntensityLevel("test", test_cfg) if test_cfg else None
+        )
+
+        print("[LEVELS] Configured intensity levels:")
+        for level in self._levels:
+            print(f"  {level}")
+        if self._test_level:
+            print(f"[LEVELS] Test level: {self._test_level}")
+
+    @staticmethod
+    def _build_levels(levels_cfg: dict) -> list:
+        """Build a sorted level list from a config dict, with fallback."""
+        levels = []
         for name in ["normal", "eco", "survival"]:
             if name in levels_cfg:
-                self._levels.append(IntensityLevel(name, levels_cfg[name]))
+                levels.append(IntensityLevel(name, levels_cfg[name]))
+        levels.sort(key=lambda l: l.soc_threshold, reverse=True)
 
-        # Sort by threshold descending (normal first, survival last)
-        self._levels.sort(key=lambda l: l.soc_threshold, reverse=True)
-
-        if not self._levels:
+        if not levels:
             # Fallback defaults
-            self._levels = [
+            levels = [
                 IntensityLevel("normal", {
                     "soc_threshold": 100,
                     "global_intensity": 100}),
@@ -99,25 +119,30 @@ class IntensityResolver:
                     "soc_threshold": 30,
                     "global_intensity": 30}),
             ]
+        return levels
 
-        print("[LEVELS] Configured intensity levels:")
-        for level in self._levels:
-            print(f"  {level}")
+    @property
+    def has_test_level(self) -> bool:
+        return self._test_level is not None
+
+    @property
+    def test_level(self) -> Optional["IntensityLevel"]:
+        return self._test_level
 
     def resolve(self, soc: float, on_battery: bool) -> IntensityLevel:
         """
         Determine the active level based on SoC and power state.
         Returns the matching IntensityLevel.
         """
+        levels = self._levels
         if not on_battery:
             # On mains: always normal
-            return self._levels[0]
+            return levels[0]
 
         # On battery: find the level whose threshold we're below
         # Levels are sorted descending by threshold
-        # Walk from highest threshold to lowest
-        active = self._levels[0]  # default to normal
-        for level in self._levels:
+        active = levels[0]  # default to normal
+        for level in levels:
             if soc <= level.soc_threshold:
                 active = level
 
@@ -169,6 +194,10 @@ class PumpController:
         # Current active level name (for status reporting)
         self.active_level_name = "normal"
 
+        # Functional command-test mode (drives pumps directly to verify
+        # speed change + on/off, no outage required). See set_test_plan.
+        self._test_mode_active = False
+
         # Background restore-retry: when mains returns, the Red Sea devices
         # may still be (re)joining Wi-Fi and unreachable for a while. We
         # retry restoring their original config until every snapshot is
@@ -186,11 +215,72 @@ class PumpController:
         vals = list(self._device_intensities.values())
         return round(sum(vals) / len(vals))
 
+    def set_test_plan(self, enabled: bool) -> bool:
+        """
+        Turn the command-test mode on/off.
+
+        Purpose: verify the service can actually drive the pumps -- change
+        their speed and turn one off -- WITHOUT needing a real outage and
+        WITHOUT waiting for the SoC to fall. This is a functional check of
+        the control path, not an autonomy simulation.
+
+        On enable: snapshot each pump's current config (so we can restore
+        it), then apply the single configured `test_level` immediately.
+        On disable: restore every pump from its snapshot (reusing the same
+        retry-capable restore as post-outage recovery).
+
+        Returns True if the state changed. No-op (False) if there is no
+        test_level configured or we're already in the requested state.
+        """
+        if enabled and not self._resolver.has_test_level:
+            print("[TEST] No 'test_level' configured — cannot enable")
+            return False
+        if self._test_mode_active == enabled:
+            return False
+
+        if enabled:
+            level = self._resolver.test_level
+            print(f"[TEST] Applying test level: speed -> "
+                  f"{level.global_intensity}% (one or more pumps may be "
+                  "turned off per per_device)")
+            with self._lock:
+                self._test_mode_active = True
+                self.active_level_name = "test"
+                controllers = self._pump_cfg.get("controllers", [])
+                for ctrl in controllers:
+                    key = ctrl["key"]
+                    target = level.get_intensity(key)
+                    label = self._ctrl_label(ctrl)
+                    print(f"  [PUMP] {label}: -> {target}%"
+                          + ("  (OFF)" if target == 0 else ""))
+                    self._device_intensities[key] = target
+                    # _api_set snapshots the original config first (idempotent),
+                    # so a later restore puts everything back exactly.
+                    self._api_set(ctrl, target)
+                self._publish_pump_state(level, "test_mode_on")
+        else:
+            print("[TEST] Test mode OFF — restoring pumps to original config")
+            self._test_mode_active = False
+            # Reuse the robust restore (immediate pass + background retry).
+            self.restore_normal()
+
+        return True
+
+    @property
+    def test_plan_active(self) -> bool:
+        return self._test_mode_active
+
     def apply_level(self, soc: float, on_battery: bool, reason: str = ""):
         """
         Determine the appropriate level and apply per-pump intensities.
         Only sends commands for pumps whose intensity actually changed.
         """
+        # While the functional test mode is active, the test level owns the
+        # pumps: ignore SoC-driven level changes so a poll cycle doesn't
+        # overwrite the test settings.
+        if self._test_mode_active:
+            return
+
         level = self._resolver.resolve(soc, on_battery)
 
         with self._lock:
@@ -1067,4 +1157,5 @@ class OutageManager:
             "pump_details": dict(self._pump._device_intensities),
             "outage_duration_min": outage_min,
             "network_mode": self._network.mode.value,
+            "test_plan": self._pump.test_plan_active,
         }
