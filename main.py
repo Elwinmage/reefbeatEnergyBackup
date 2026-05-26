@@ -331,6 +331,68 @@ def _signal_handler(sig, frame):
     _running = False
 
 
+def _migrate_config(cfg: dict) -> None:
+    """
+    Upgrade an existing config.json in-memory to keep newer features working
+    even if the user's file predates them. Only fills in missing keys or
+    widens values that are now known to be too small; never overwrites a
+    deliberate larger/custom value. Logs what it changes.
+
+    Rationale: several hotspot fixes depend on config values that old files
+    don't have (or have set too low):
+      - hotspot DHCP range must cover the per-device reservations, which use
+        the LAN last octet (e.g. .83, .122, .176). A range of .10-.50 leaves
+        those reservations out of range.
+      - failover must wait long enough for a slow device (RSRUN) whose Wi-Fi
+        watchdog can take ~15 min to rejoin the hotspot.
+      - the hotspot health-check cadence must be tight to catch late joiners.
+    """
+    changes = []
+    net = cfg.setdefault("network", {})
+    hs = net.setdefault("hotspot", {})
+    fo = net.setdefault("failover", {})
+    mt = cfg.setdefault("maintenance", {})
+
+    # Widen the hotspot DHCP range so per-device reservations (which reuse
+    # the LAN last octet, up to .254) are inside it.
+    def _last_octet(ip, default):
+        try:
+            return int(str(ip).split(".")[-1])
+        except (ValueError, AttributeError):
+            return default
+
+    if _last_octet(hs.get("dhcp_end"), 0) < 250:
+        old = hs.get("dhcp_end")
+        prefix = ".".join(str(hs.get("ip", "192.168.4.1")).split(".")[:3])
+        hs["dhcp_end"] = f"{prefix}.250"
+        changes.append(f"hotspot.dhcp_end {old} -> {hs['dhcp_end']}")
+    # Start low enough too.
+    if _last_octet(hs.get("dhcp_start"), 999) > 10:
+        old = hs.get("dhcp_start")
+        prefix = ".".join(str(hs.get("ip", "192.168.4.1")).split(".")[:3])
+        hs["dhcp_start"] = f"{prefix}.10"
+        changes.append(f"hotspot.dhcp_start {old} -> {hs['dhcp_start']}")
+
+    # Give slow devices time to rejoin the hotspot (their Wi-Fi watchdog can
+    # be ~15 min). Only raise it if it's below that.
+    if float(fo.get("controller_reconnect_timeout_s", 0) or 0) < 900:
+        old = fo.get("controller_reconnect_timeout_s")
+        fo["controller_reconnect_timeout_s"] = 900.0
+        changes.append(
+            f"failover.controller_reconnect_timeout_s {old} -> 900.0")
+
+    # Tight hotspot health-check cadence to catch late joiners.
+    if "health_interval_hotspot_s" not in mt:
+        mt["health_interval_hotspot_s"] = 60.0
+        changes.append("maintenance.health_interval_hotspot_s -> 60.0 (added)")
+
+    if changes:
+        print("[CONFIG] Auto-migrated settings (edit config.json to make "
+              "permanent):")
+        for c in changes:
+            print(f"  • {c}")
+
+
 def load_config(path: str) -> dict:
     """Load and validate config from JSON file."""
     p = Path(path)
@@ -341,6 +403,8 @@ def load_config(path: str) -> dict:
 
     with open(p) as f:
         cfg = json.load(f)
+
+    _migrate_config(cfg)
 
     monitoring = cfg.get("monitoring", {})
     detection = cfg.get("outage_detection", {})
@@ -476,6 +540,8 @@ def main():
             maint_cfg.get("health_interval_s", 300.0))        # 5 min on mains
         health_interval_batt = float(
             maint_cfg.get("health_interval_battery_s", 900.0))  # 15 min on battery
+        health_interval_hotspot = float(
+            maint_cfg.get("health_interval_hotspot_s", 60.0))   # 1 min on hotspot
         reference_interval = float(
             maint_cfg.get("reference_snapshot_interval_s", 3600.0))  # hourly
         _next_health = 0.0      # 0 → run on first iteration
@@ -653,14 +719,28 @@ def main():
             # Spaced out further while on battery to save energy.
             if mono >= _next_health:
                 try:
+                    # While the hotspot is up, devices may have (re)joined
+                    # with new IPs since the failover ran; refresh the
+                    # mapping so the health check probes the right address.
+                    if network.mode.value == "hotspot":
+                        network.remap_controller_ips_from_leases(
+                            cfg.get("pump_control", {}).get("controllers", []))
                     outage_mgr._pump.health_check(
                         network_mode=status.get("network_mode", "?"),
                         on_battery=not on_mains,
                     )
                 except Exception as e:  # never let maintenance kill the loop
                     print(f"[HEALTH] check failed: {e}")
-                interval = health_interval_mains if on_mains \
-                    else health_interval_batt
+                # Pick the cadence: tight while on the hotspot (so a slow
+                # device like an RSRUN that only rejoins after its Wi-Fi
+                # watchdog fires gets remapped and detected quickly), normal
+                # on mains, relaxed on battery+client (save energy).
+                if network.mode.value == "hotspot":
+                    interval = health_interval_hotspot
+                elif on_mains:
+                    interval = health_interval_mains
+                else:
+                    interval = health_interval_batt
                 _next_health = mono + interval
 
             # Reference snapshot: only on mains and in nominal mode, so we

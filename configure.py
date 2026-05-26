@@ -484,7 +484,25 @@ def get_reefbeat_wifi(ip: str) -> Optional[Dict]:
 
 
 def get_reefbeat_mac(ip: str) -> Optional[str]:
-    """Get MAC address from a ReefBeat device via ARP."""
+    """
+    Get the MAC address from a ReefBeat device.
+
+    Primary source is the device's own /wifi endpoint (reliable), which
+    exposes the MAC. Falls back to the system ARP table only if the HTTP
+    read fails.
+    """
+    # Preferred: read it straight from the device.
+    wifi = get_reefbeat_wifi(ip)
+    if wifi:
+        # IMPORTANT: use the device's own MAC ("mac"), NOT "bssid" — bssid
+        # is the access point's MAC, which is identical for every device
+        # and would make all DHCP reservations collide.
+        for key in ("mac", "mac_address", "macAddress", "sta_mac"):
+            val = wifi.get(key)
+            if val and re.match(r"(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", val):
+                return val.lower()
+
+    # Fallback: ARP table (only works if there was recent traffic).
     try:
         result = subprocess.run(
             ["arp", "-n", ip], capture_output=True, text=True, timeout=5
@@ -493,7 +511,7 @@ def get_reefbeat_mac(ip: str) -> Optional[str]:
             if ip in line:
                 match = re.search(r"(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", line)
                 if match:
-                    return match.group(1)
+                    return match.group(1).lower()
     except Exception:
         pass
     return None
@@ -958,10 +976,43 @@ def run_wizard(install_dir: str):
                 device_ssids[d["name"]] = ssid
                 info(f"  {d['name']}: SSID = '{ssid}'")
 
-        mac = get_reefbeat_mac(ip)
+        # MAC is REQUIRED: it drives both the hotspot DHCP reservation
+        # (so the device keeps its IP on the backup AP) and the hotspot
+        # MAC whitelist (so it is allowed to associate at all). A device
+        # without a MAC here will be silently rejected by the hotspot, so
+        # we retry and, as a last resort, ask for it manually.
+        mac = None
+        for attempt in range(3):
+            mac = get_reefbeat_mac(ip)
+            if mac:
+                break
+            time.sleep(1)
+
         if mac:
             device_macs[d["name"]] = {"mac": mac, "ip": ip}
             info(f"  {d['name']}: MAC = {mac}")
+        else:
+            warn(t(
+                f"  {d['name']} ({ip}) : MAC introuvable via /wifi !",
+                f"  {d['name']} ({ip}): could NOT read MAC via /wifi!"
+            ))
+            warn(t(
+                "  Sans MAC, cet équipement sera REJETÉ par le hotspot de secours.",
+                "  Without a MAC, this device will be REJECTED by the backup hotspot."
+            ))
+            manual = ask(t(
+                f"  Saisissez la MAC de {d['name']} manuellement (ou laissez vide)",
+                f"  Enter the MAC for {d['name']} manually (or leave empty)"
+            ), "")
+            if manual and re.match(
+                    r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", manual.strip()):
+                device_macs[d["name"]] = {"mac": manual.strip().lower(), "ip": ip}
+                ok(f"  {d['name']}: MAC = {manual.strip().lower()}")
+            else:
+                warn(t(
+                    f"  {d['name']} restera sans réservation/whitelist hotspot.",
+                    f"  {d['name']} will have no hotspot reservation/whitelist."
+                ))
 
     # Check all devices are on the same SSID
     unique_ssids = set(device_ssids.values())
@@ -1024,10 +1075,29 @@ def run_wizard(install_dir: str):
         warn(t("Impossible de valider les identifiants",
                "Cannot validate credentials"))
 
-    # Build MAC->IP mapping for hotspot DHCP
+    # Build MAC -> hotspot-IP mapping for the hotspot DHCP reservations.
+    #
+    # On the hotspot the devices live on a different subnet (192.168.4.0/24
+    # by default) than on the home LAN (e.g. 192.168.0.0/24). To keep IPs
+    # predictable and 1:1, we reserve each device's SAME last octet on the
+    # hotspot subnet: 192.168.0.83 -> 192.168.4.83, 192.168.0.176 ->
+    # 192.168.4.176, etc. This makes the hotspot remapping a trivial,
+    # deterministic octet substitution that needs no lease lookup.
+    hotspot_subnet_prefix = "192.168.4"  # 3-octet prefix of hotspot /24
+
+    def to_hotspot_ip(lan_ip: str) -> Optional[str]:
+        parts = lan_ip.split(".")
+        if len(parts) != 4:
+            return None
+        return f"{hotspot_subnet_prefix}.{parts[3]}"
+
     mac_ip_map = {}
     for name, data in device_macs.items():
-        mac_ip_map[data["mac"]] = data["ip"]
+        hotspot_ip = to_hotspot_ip(data["ip"])
+        if hotspot_ip:
+            mac_ip_map[data["mac"]] = hotspot_ip
+            info(f"  {name}: réservation hotspot {data['mac']} "
+                 f"-> {hotspot_ip} (LAN {data['ip']})")
 
     cfg["network"] = {
         "interface": "wlan0",

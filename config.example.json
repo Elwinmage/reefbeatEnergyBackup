@@ -81,14 +81,14 @@
       "retry_delay_s": 5.0,
       "scan_timeout_s": 15.0,
       "connect_timeout_s": 20.0,
-      "controller_reconnect_timeout_s": 60.0,
+      "controller_reconnect_timeout_s": 900.0,
       "router_check_interval_s": 60.0,
       "router_ip": "192.168.1.1"
     },
     "hotspot": {
       "ip": "192.168.4.1",
       "dhcp_start": "192.168.4.10",
-      "dhcp_end": "192.168.4.50",
+      "dhcp_end": "192.168.4.250",
       "channel": 6,
       "controller_mac_ips": {}
     },
@@ -125,6 +125,7 @@
   "maintenance": {
     "health_interval_s": 300.0,
     "health_interval_battery_s": 900.0,
+    "health_interval_hotspot_s": 60.0,
     "reference_snapshot_interval_s": 3600.0
   }
 }

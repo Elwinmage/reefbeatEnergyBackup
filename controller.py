@@ -198,6 +198,10 @@ class PumpController:
         # speed change + on/off, no outage required). See set_test_plan.
         self._test_mode_active = False
 
+        # Last health-check reachability per label, to detect a device that
+        # transitions DOWN -> reachable and needs the current level re-applied.
+        self._last_health: Dict[str, bool] = {}
+
         # Background restore-retry: when mains returns, the Red Sea devices
         # may still be (re)joining Wi-Fi and unreachable for a while. We
         # retry restoring their original config until every snapshot is
@@ -270,6 +274,46 @@ class PumpController:
     def test_plan_active(self) -> bool:
         return self._test_mode_active
 
+    def reapply_current_level(self, only_keys: Optional[set] = None) -> int:
+        """
+        Force-resend the CURRENT level's intensity to pumps, bypassing the
+        "already at target" optimisation in apply_level.
+
+        Used to catch devices that were unreachable when the level was first
+        applied (e.g. a slow RSRUN that only rejoined the hotspot minutes
+        into the outage): their _device_intensities was already set to the
+        eco target, so apply_level would never re-command them. Here we
+        re-issue the command regardless.
+
+        If only_keys is given, only those controller keys are (re)commanded;
+        otherwise all are. Does nothing in functional test mode. Returns the
+        number of pumps commanded.
+        """
+        if self._test_mode_active:
+            return 0
+
+        # Resolve against the level currently in effect.
+        level = self._resolver._levels[0]
+        for lvl in self._resolver._levels:
+            if lvl.name == self.active_level_name:
+                level = lvl
+                break
+
+        commanded = 0
+        with self._lock:
+            for ctrl in self._pump_cfg.get("controllers", []):
+                key = ctrl["key"]
+                if only_keys is not None and key not in only_keys:
+                    continue
+                target = level.get_intensity(key)
+                label = self._ctrl_label(ctrl)
+                print(f"  [PUMP] {label}: re-applying {target}% "
+                      f"(level {level.name})")
+                self._device_intensities[key] = target
+                self._api_set(ctrl, target)
+                commanded += 1
+        return commanded
+
     def apply_level(self, soc: float, on_battery: bool, reason: str = ""):
         """
         Determine the appropriate level and apply per-pump intensities.
@@ -339,6 +383,8 @@ class PumpController:
         normal = self._resolver.normal_level
         with self._lock:
             self.active_level_name = "normal"
+            # Forget battery-mode reachability tracking; next outage starts fresh.
+            self._last_health = {}
             # Mark all pumps as logically back to normal for status/MQTT.
             for ctrl in self._pump_cfg.get("controllers", []):
                 self._device_intensities[ctrl["key"]] = normal.get_intensity(
@@ -869,9 +915,11 @@ class PumpController:
         ok_count = 0
         details = []
         seen_ips = {}
+        label_to_key = {}
         for ctrl in controllers:
             ip = ctrl.get("ip")
             label = self._ctrl_label(ctrl)
+            label_to_key[label] = ctrl["key"]
             if not ip:
                 results[label] = False
                 details.append(f"{label}=no-ip")
@@ -897,6 +945,25 @@ class PumpController:
         print(f"[HEALTH] {icon} {ok_count}/{total} devices reachable "
               f"| net={network_mode} | {ctx} | "
               + ", ".join(details))
+
+        # On battery: a device that just transitioned DOWN -> reachable
+        # (e.g. a slow RSRUN that finally rejoined the hotspot) missed the
+        # eco/survival level applied at outage start. Re-apply the current
+        # level to just those keys so it catches up.
+        if on_battery:
+            newly_up = {
+                label for label, up in results.items()
+                if up and not self._last_health.get(label, False)
+            }
+            if newly_up:
+                newly_up_keys = {label_to_key[l] for l in newly_up
+                                 if l in label_to_key}
+                print(f"[HEALTH] {len(newly_up)} device(s) just became "
+                      "reachable — re-applying current level")
+                self.reapply_current_level(only_keys=newly_up_keys)
+
+        # Remember state for next round (used to detect transitions).
+        self._last_health = results
         return results
 
     def _is_device_off(self, ip: str) -> bool:
@@ -1079,8 +1146,9 @@ class OutageManager:
             # Stop failover
             self._stop_failover.set()
 
-            # Restore network
-            self._network.restore_normal()
+            # Restore network (and undo any hotspot IP remapping)
+            self._network.restore_normal(
+                self._pump_cfg.get("controllers", []))
 
             # Restore all pumps to normal
             self._pump.restore_normal()
@@ -1094,8 +1162,22 @@ class OutageManager:
             print("[FAILOVER] Cancelled (power restored during wait)")
             return
 
-        # Network failover (3 levels)
         controllers = self._pump_cfg.get("controllers", [])
+
+        # Apply the eco/survival level to whatever is reachable RIGHT NOW,
+        # before waiting on the (possibly slow) network failover. On battery
+        # we don't want pumps running at 100% for minutes while a laggard
+        # device finishes rejoining the hotspot — reduce the ones we can
+        # reach immediately. Devices that only come back later are caught
+        # by the periodic health check (see _apply_level_to_reachable).
+        self._pump.apply_level(
+            self.soc, on_battery=True, reason="outage_initial"
+        )
+
+        # Network failover (3 levels). This may wait up to several minutes
+        # for slow devices, but it runs in this background thread and does
+        # not block monitoring. It remaps device IPs onto the hotspot as
+        # they (re)join.
         reached = self._network.execute_failover(
             controllers, self._stop_failover
         )
@@ -1112,9 +1194,11 @@ class OutageManager:
         if self._notifier and self._network.mode.value != "client":
             self._notifier.notify_network_failover(self._network.mode.value)
 
-        # Apply battery level based on current SoC
+        # Re-apply the level now that more devices may have (re)joined via
+        # the failover, so any that just became reachable get the right
+        # intensity (apply_level only commands pumps whose target changed).
         self._pump.apply_level(
-            self.soc, on_battery=True, reason="outage_initial"
+            self.soc, on_battery=True, reason="outage_post_failover"
         )
 
         # Monitor loop

@@ -58,8 +58,48 @@ class NetworkManager:
         self.mode = NetworkMode.CLIENT
         self._hostapd_conf = "/tmp/reef_hostapd.conf"
         self._dnsmasq_conf = "/tmp/reef_dnsmasq.conf"
+        self._accept_mac_file = "/tmp/reef_hostapd_accept.maclist"
         self._nat_active = False
         self._lock = threading.Lock()
+        self._wifi_cut_thread: Optional[threading.Thread] = None
+
+    def cut_wifi_for(self, minutes: float) -> None:
+        """
+        TEST helper: bring the Wi-Fi interface down for `minutes`, then
+        back up, in a background thread. Lets the test blueprint observe
+        the failover chain (client -> rejoin -> hotspot) and notification
+        path against a real link loss.
+
+        A guaranteed restore runs in a finally block even if anything
+        throws, so the link can never stay down because of a test. A
+        second request while one is active is ignored.
+        """
+        if minutes <= 0:
+            return
+        if (self._wifi_cut_thread is not None
+                and self._wifi_cut_thread.is_alive()):
+            print("[TEST] Wi-Fi cut already running, ignoring new request")
+            return
+
+        def _worker():
+            iface = self._interface
+            print(f"[TEST] Cutting Wi-Fi ({iface}) for {minutes:.0f} min")
+            try:
+                subprocess.run(
+                    ["sudo", "ip", "link", "set", iface, "down"],
+                    capture_output=True, timeout=10, check=False,
+                )
+                time.sleep(minutes * 60.0)
+            finally:
+                # Always bring it back, even on error/interrupt.
+                subprocess.run(
+                    ["sudo", "ip", "link", "set", iface, "up"],
+                    capture_output=True, timeout=10, check=False,
+                )
+                print(f"[TEST] Wi-Fi ({iface}) restored")
+
+        self._wifi_cut_thread = threading.Thread(target=_worker, daemon=True)
+        self._wifi_cut_thread.start()
 
     @property
     def enabled(self) -> bool:
@@ -97,6 +137,24 @@ class NetworkManager:
                 return True
         print("  [NET] No controllers reachable")
         return False
+
+    def _count_reachable(self, controllers: list) -> int:
+        """
+        Count how many distinct controller devices respond to ping.
+
+        Dedupes by IP so a multi-pump box (two logical controllers sharing
+        one IP) counts as one device, matching the n/total progress logs.
+        """
+        reachable_ips = set()
+        checked = set()
+        for ctrl in controllers:
+            ip = ctrl.get("ip")
+            if not ip or ip in checked:
+                continue
+            checked.add(ip)
+            if self.ping(ip):
+                reachable_ips.add(ip)
+        return len(reachable_ips)
 
     def get_current_ssid(self) -> Optional[str]:
         """Get the SSID the RPi is currently connected to."""
@@ -294,6 +352,33 @@ class NetworkManager:
                     ["sudo", "ip", "link", "set", self._interface, "up"],
                     capture_output=True)
 
+                # MAC whitelist: only let our known ReefBeat devices
+                # associate. Without this, the hotspot mirrors the home
+                # SSID, so EVERY Wi-Fi device in the house (phones, feeders,
+                # other ESP gadgets...) tries to join, saturates the RPi's
+                # radio, and our pumps get kicked before they can even get
+                # a DHCP lease. We saw 15 clients fighting over the AP.
+                #
+                # If no MACs are configured yet (fresh install), stay open
+                # (macaddr_acl=0) so we don't lock everything out.
+                mac_ips = self._hotspot_cfg.get("controller_mac_ips", {})
+                allowed_macs = [m.strip().lower() for m in mac_ips.keys()
+                                if m and m.strip()]
+
+                if allowed_macs:
+                    Path(self._accept_mac_file).write_text(
+                        "\n".join(allowed_macs) + "\n")
+                    acl_lines = (
+                        f"macaddr_acl=1\n"
+                        f"accept_mac_file={self._accept_mac_file}\n"
+                    )
+                    print(f"[HOTSPOT] MAC whitelist active "
+                          f"({len(allowed_macs)} device(s) allowed)")
+                else:
+                    acl_lines = "macaddr_acl=0\n"
+                    print("[HOTSPOT] No MAC whitelist configured — open AP "
+                          "(run configure.py to restrict to your pumps)")
+
                 # hostapd config
                 hostapd = (
                     f"interface={self._interface}\n"
@@ -302,7 +387,7 @@ class NetworkManager:
                     f"hw_mode=g\n"
                     f"channel={channel}\n"
                     f"wmm_enabled=0\n"
-                    f"macaddr_acl=0\n"
+                    f"{acl_lines}"
                     f"auth_algs=1\n"
                     f"ignore_broadcast_ssid=0\n"
                     f"wpa=2\n"
@@ -313,19 +398,43 @@ class NetworkManager:
                 )
                 Path(self._hostapd_conf).write_text(hostapd)
 
-                # dnsmasq config
+                # dnsmasq config.
+                #
+                # The hostapd MAC ACL rejects unknown devices at the 802.11
+                # layer, but they still fire a DHCPDISCOVER before being
+                # kicked, and dnsmasq (which doesn't know the ACL) would
+                # answer and burn a lease. To stop that, we tag each known
+                # MAC ("known") and tell dnsmasq to ignore any client that
+                # is NOT tagged known. Result: only our pumps ever get a
+                # lease, no residual leases from feeders/ESPs/etc.
+                mac_reservations = self._hotspot_cfg.get(
+                    "controller_mac_ips", {})
+
                 dnsmasq = (
                     f"interface={self._interface}\n"
                     f"dhcp-range={dhcp_start},{dhcp_end},255.255.255.0,24h\n"
+                    f"dhcp-leasefile=/tmp/reef_dnsmasq.leases\n"
                     f"bind-interfaces\n"
                     f"server=8.8.8.8\n"
                     f"domain-needed\n"
                     f"bogus-priv\n"
                 )
-                for mac, ctrl_ip in self._hotspot_cfg.get(
-                        "controller_mac_ips", {}).items():
-                    dnsmasq += f"dhcp-host={mac},{ctrl_ip}\n"
+                if mac_reservations:
+                    # Only serve DHCP to known MACs.
+                    dnsmasq += "dhcp-ignore=tag:!known\n"
+                    for mac, ctrl_ip in mac_reservations.items():
+                        # Tag this MAC "known" AND pin its reserved IP.
+                        dnsmasq += f"dhcp-host={mac},set:known,{ctrl_ip}\n"
                 Path(self._dnsmasq_conf).write_text(dnsmasq)
+
+                # Purge any stale lease file from a previous hotspot session.
+                # It persists across activations and would otherwise show
+                # (and potentially reuse) leases from devices that are no
+                # longer allowed, polluting the [DHCP] logs and the remap.
+                try:
+                    Path("/tmp/reef_dnsmasq.leases").unlink(missing_ok=True)
+                except OSError:
+                    pass
 
                 # Start services
                 subprocess.run(
@@ -544,7 +653,7 @@ class NetworkManager:
         retry_count = self._failover_cfg.get("retry_count", 3)
         retry_delay = self._failover_cfg.get("retry_delay_s", 5.0)
         reconnect_timeout = self._failover_cfg.get(
-            "controller_reconnect_timeout_s", 60.0)
+            "controller_reconnect_timeout_s", 900.0)
 
         # =================================================================
         # Level 1: Direct reach
@@ -608,10 +717,19 @@ class NetworkManager:
             print("[FAILOVER] Level 3 — Hotspot activation failed")
             return False
 
-        # Wait for controllers to reconnect to our hotspot
+        # Wait for controllers to reconnect to our hotspot.
+        #
+        # Some devices (e.g. RSRUN) only re-scan and rejoin after their own
+        # Wi-Fi watchdog fires, which can be several minutes — far longer
+        # than the others. So we wait up to controller_reconnect_timeout_s
+        # (default raised to 900s = 15 min to cover a typical device
+        # watchdog), but return as soon as ALL controllers are reachable.
+        # We log progress (n/total) so a slow device is visible.
         print(f"[FAILOVER] Level 3 — Waiting for controllers "
-              f"(up to {reconnect_timeout}s)...")
+              f"(up to {reconnect_timeout:.0f}s)...")
         start = time.monotonic()
+        total = len({c.get("ip") for c in controllers if c.get("ip")})
+        last_count = -1
         while time.monotonic() - start < reconnect_timeout:
             if stop_event.is_set():
                 return False
@@ -620,39 +738,207 @@ class NetworkManager:
             # Check connected DHCP clients
             self._log_dhcp_clients()
 
-            if self.are_controllers_reachable(controllers):
+            # Devices get NEW IPs on the hotspot subnet. Remap each
+            # controller to the IP it actually obtained (from DHCP leases)
+            # before testing reachability, otherwise we'd ping the old
+            # 192.168.0.x addresses that no longer exist here.
+            self.remap_controller_ips_from_leases(controllers)
+
+            reachable = self._count_reachable(controllers)
+            if reachable != last_count:
+                elapsed = time.monotonic() - start
+                print(f"[FAILOVER] Level 3 — {reachable}/{total} "
+                      f"controller(s) reachable ({elapsed:.0f}s elapsed)")
+                last_count = reachable
+
+            if reachable >= total:
                 print("[FAILOVER] Level 3 OK — "
-                      "Controllers connected to hotspot")
+                      "All controllers connected to hotspot")
                 return True
 
-        print("[FAILOVER] Level 3 — Some controllers may not "
-              "have reconnected")
+        # Timed out: return True if at least one came back (partial success),
+        # the slow ones will be picked up by the periodic health check.
+        final = self._count_reachable(controllers)
+        if final > 0:
+            print(f"[FAILOVER] Level 3 — {final}/{total} reachable at timeout; "
+                  "remaining devices will be retried by the health check")
+            return True
+        print("[FAILOVER] Level 3 — No controllers reconnected")
         return False
 
     def _log_dhcp_clients(self):
-        """Log currently connected DHCP clients for debugging."""
+        """
+        Log DHCP clients from OUR hotspot lease file.
+
+        We read /tmp/reef_dnsmasq.leases (the file our dnsmasq instance
+        writes), not the system default, and — when a MAC whitelist is in
+        effect — only show allowed devices. This avoids logging stale or
+        non-whitelisted entries that would suggest rogue clients got an IP
+        when they did not.
+        """
         try:
-            leases = Path("/var/lib/misc/dnsmasq.leases")
-            if leases.exists():
-                content = leases.read_text().strip()
-                if content:
-                    for line in content.split("\n"):
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            mac, ip, name = parts[1], parts[2], parts[3]
-                            print(f"  [DHCP] {name} ({mac}) -> {ip}")
+            allowed = {m.strip().lower() for m in
+                       self._hotspot_cfg.get("controller_mac_ips", {}).keys()
+                       if m and m.strip()}
+            leases = Path("/tmp/reef_dnsmasq.leases")
+            if not leases.exists():
+                return
+            for line in leases.read_text().strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 4:
+                    mac, ip, name = parts[1].lower(), parts[2], parts[3]
+                    if allowed and mac not in allowed:
+                        continue  # not one of our pumps; don't show it
+                    print(f"  [DHCP] {name} ({mac}) -> {ip}")
         except Exception:
             pass
+
+    def _read_dhcp_leases(self) -> Dict[str, str]:
+        """
+        Parse the dnsmasq lease file into a {hostname: ip} map.
+
+        Lease line format: <expiry> <mac> <ip> <hostname> <client-id>.
+        Hostnames with value "*" (unknown) are skipped.
+        """
+        mapping: Dict[str, str] = {}
+        for path in ("/var/lib/misc/dnsmasq.leases",
+                     "/tmp/reef_dnsmasq.leases"):
+            p = Path(path)
+            if not p.exists():
+                continue
+            try:
+                for line in p.read_text().strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[3] != "*":
+                        mapping[parts[3]] = parts[2]
+            except OSError:
+                continue
+        return mapping
+
+    def _read_dhcp_leases_by_mac(self) -> Dict[str, str]:
+        """
+        Parse the dnsmasq lease file into a {mac: ip} map (MAC lowercased).
+
+        This is the reliable cross-reference: ReefBeat DHCP hostnames don't
+        always match our controller keys (e.g. an RSRUN can announce
+        "SBS50_xxx"), but the MAC always matches what we collected during
+        configuration.
+        """
+        mapping: Dict[str, str] = {}
+        for path in ("/var/lib/misc/dnsmasq.leases",
+                     "/tmp/reef_dnsmasq.leases"):
+            p = Path(path)
+            if not p.exists():
+                continue
+            try:
+                for line in p.read_text().strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        mapping[parts[1].lower()] = parts[2]
+            except OSError:
+                continue
+        return mapping
+
+    def remap_controller_ips_from_leases(self, controllers: list) -> int:
+        """
+        While the hotspot is active, the ReefBeat devices live on the
+        hotspot subnet (192.168.4.0/24) instead of the home LAN
+        (192.168.0.0/24). This rewrites each controller's live "ip" field
+        to its hotspot address so pings and HTTP commands reach them.
+
+        Strategies, in order of reliability:
+          1. Real DHCP lease matched by MAC: the device's MAC (from the
+             configured controller_mac_ips) is looked up in the live lease
+             table, giving the IP it ACTUALLY obtained. This is ground
+             truth and handles devices that didn't get their reservation.
+          2. Deterministic octet substitution: keep the same last octet on
+             the hotspot subnet (192.168.0.83 -> 192.168.4.83). Used when
+             we have no MAC or no lease yet, and matches the dhcp-host
+             reservations set up during configuration.
+          3. Fallback by DHCP lease hostname (best-effort).
+
+        The original IP is saved in "ip_original" so restore_controller_ips
+        can put it back when we leave hotspot mode.
+        """
+        hotspot_prefix = ".".join(
+            self._hotspot_cfg.get("ip", "192.168.4.1").split(".")[:3])
+
+        leases = self._read_dhcp_leases()
+        leases_by_mac = self._read_dhcp_leases_by_mac()
+
+        # Build {reserved_hotspot_ip: mac} so we can find a controller's MAC
+        # from its expected hotspot IP (controller_mac_ips is {mac: ip}).
+        ip_to_mac = {ip: mac.lower() for mac, ip
+                     in self._hotspot_cfg.get("controller_mac_ips", {}).items()}
+
+        remapped = 0
+        for ctrl in controllers:
+            cur = ctrl.get("ip", "")
+            # Use the ORIGINAL LAN ip as the substitution source, so calling
+            # this repeatedly (e.g. each health check) is idempotent.
+            src = ctrl.get("ip_original", cur)
+            parts = src.split(".")
+
+            new_ip = None
+
+            # Strategy 2 value (computed first, used as the key to find MAC).
+            subst_ip = f"{hotspot_prefix}.{parts[3]}" if len(parts) == 4 else None
+
+            # Strategy 1: real lease by MAC (ground truth).
+            mac = ip_to_mac.get(subst_ip) if subst_ip else None
+            if mac and mac in leases_by_mac:
+                new_ip = leases_by_mac[mac]
+
+            # Strategy 2: deterministic octet substitution.
+            if new_ip is None:
+                new_ip = subst_ip
+
+            # Strategy 3: fallback to lease hostname match.
+            if new_ip is None and leases:
+                host = ctrl.get("key", "").split(" / ")[0].strip()
+                new_ip = leases.get(host)
+                if new_ip is None:
+                    for lh, lip in leases.items():
+                        if host and (host in lh or lh in host):
+                            new_ip = lip
+                            break
+
+            if new_ip and new_ip != ctrl.get("ip"):
+                if "ip_original" not in ctrl:
+                    ctrl["ip_original"] = cur
+                print(f"  [NET] Remap {ctrl.get('key')}: "
+                      f"{ctrl.get('ip')} -> {new_ip} (hotspot)")
+                ctrl["ip"] = new_ip
+                remapped += 1
+
+        if remapped:
+            print(f"[NET] Remapped {remapped} controller IP(s) to hotspot subnet")
+        return remapped
+
+    def restore_controller_ips(self, controllers: list) -> None:
+        """
+        Put back each controller's original LAN IP after leaving hotspot
+        mode (saved in ip_original by remap_controller_ips_from_leases).
+        """
+        for ctrl in controllers:
+            orig = ctrl.pop("ip_original", None)
+            if orig and orig != ctrl.get("ip"):
+                print(f"  [NET] Restore {ctrl.get('key')}: "
+                      f"{ctrl.get('ip')} -> {orig}")
+                ctrl["ip"] = orig
 
     # =========================================================================
     # Restore after power return
     # =========================================================================
 
-    def restore_normal(self):
+    def restore_normal(self, controllers: Optional[list] = None):
         """
         Restore normal network mode after power returns.
         If hotspot was active, deactivate it.
         If we rejoined wifi, nothing to do (already connected).
+
+        `controllers` (if given) have their original LAN IPs restored,
+        undoing any hotspot-subnet remapping.
         """
         if self.mode == NetworkMode.HOTSPOT:
             print("[NET] Restoring from hotspot to client mode...")
@@ -664,6 +950,11 @@ class NetworkManager:
         elif self.mode == NetworkMode.CLIENT_REJOIN:
             print("[NET] Already connected via rejoin, nothing to restore")
             self.mode = NetworkMode.CLIENT
+
+        # Always undo any hotspot IP remapping so we go back to the
+        # configured LAN addresses.
+        if controllers:
+            self.restore_controller_ips(controllers)
 
     def cleanup(self):
         if self.mode == NetworkMode.HOTSPOT:
