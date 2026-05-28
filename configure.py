@@ -2581,6 +2581,73 @@ def _step8_notifications(cfg: dict, defaults: dict):
         min_val=30, max_val=3600
     )
 
+    # --- Periodic connectivity checks ---
+    # Two independent health checks driven by the main loop:
+    #   - LTE link check: audits the 4G backup path so we know it works
+    #     before a real outage; alert goes out over the normal internet.
+    #   - Internet check: tests the normal WAN; if down, the alert is
+    #     forced out through the LTE modem.
+    print()
+    section(t("8d. Tests de connectivité périodiques",
+               "8d. Periodic connectivity checks"))
+
+    default_conn = default_notif.get("connectivity", {})
+
+    lte_check_interval_h = 0
+    if use_lte:
+        info(t(
+            "Test régulier de la liaison 4G pour vérifier que le failover",
+            "Periodically test the 4G link to confirm the failover path"
+        ))
+        info(t(
+            "fonctionnera en cas de coupure (0 = désactivé).",
+            "will work during an outage (0 = disabled)."
+        ))
+        print()
+        lte_check_interval_h = ask_int(
+            t("Intervalle du test 4G/LTE en heures (0 = désactivé)",
+              "4G/LTE check interval in hours (0 = disabled)"),
+            default=int(default_conn.get("lte_check_interval_h", 8)),
+            min_val=0, max_val=168
+        )
+    else:
+        info(t(
+            "Failover 4G désactivé : test 4G ignoré.",
+            "4G failover disabled: 4G check skipped."
+        ))
+
+    print()
+    info(t(
+        "Test régulier de la connexion internet normale ; si elle est",
+        "Periodically test the normal internet connection; if it is"
+    ))
+    info(t(
+        "coupée, une notification est envoyée via la 4G (0 = désactivé).",
+        "down, a notification is sent through 4G (0 = disabled)."
+    ))
+    print()
+    internet_check_interval_h = ask_int(
+        t("Intervalle du test internet en heures (0 = désactivé)",
+          "Internet check interval in hours (0 = disabled)"),
+        default=int(default_conn.get("internet_check_interval_h", 8)),
+        min_val=0, max_val=168
+    )
+
+    internet_check_host = default_conn.get("internet_check_host", "8.8.8.8")
+
+    # WAN interfaces to probe for the internet check, in priority order:
+    # wired (eth0) first, then the configured Wi-Fi interface. We bind the
+    # ping to each so the 4G modem (which may be the default route during a
+    # hotspot failover) never masks a real WAN outage. Honour an existing
+    # custom list if the user already set one.
+    wifi_iface = cfg.get("network", {}).get("interface", "wlan0")
+    default_ifaces = default_conn.get("internet_check_interfaces")
+    if not default_ifaces:
+        default_ifaces = ["eth0"]
+        if wifi_iface and wifi_iface not in default_ifaces:
+            default_ifaces.append(wifi_iface)
+    internet_check_interfaces = default_ifaces
+
     # --- LTE Gateway (NAT routing for ReefBeat cloud access) ---
     use_lte_gateway = False
     if use_lte:
@@ -2639,6 +2706,12 @@ def _step8_notifications(cfg: dict, defaults: dict):
             "mode": lte_mode if use_lte else "none",
             "interface": "auto",
             "check_url": "http://192.168.8.1/api/monitoring/status",
+        },
+        "connectivity": {
+            "lte_check_interval_h": lte_check_interval_h,
+            "internet_check_interval_h": internet_check_interval_h,
+            "internet_check_host": internet_check_host,
+            "internet_check_interfaces": internet_check_interfaces,
         },
         "cooldown_s": cooldown,
     }

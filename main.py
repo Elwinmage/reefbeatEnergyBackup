@@ -547,6 +547,22 @@ def main():
         _next_health = 0.0      # 0 → run on first iteration
         _next_reference = time.monotonic() + reference_interval
 
+        # --- Periodic connectivity checks (LTE link + normal internet) ---
+        # Both are deadline-based and configured in hours via the notifier
+        # config. An interval of 0 disables that check. We schedule the
+        # first run one full interval out (not immediately) to avoid a burst
+        # of network probes during startup.
+        _lte_check_h = notifier.lte_check_interval_h()
+        _inet_check_h = notifier.internet_check_interval_h()
+        _next_lte_check = (time.monotonic() + _lte_check_h * 3600.0
+                           if _lte_check_h > 0 else None)
+        _next_inet_check = (time.monotonic() + _inet_check_h * 3600.0
+                            if _inet_check_h > 0 else None)
+        if _lte_check_h > 0:
+            print(f"[CONN] LTE health check every {_lte_check_h:g}h")
+        if _inet_check_h > 0:
+            print(f"[CONN] Internet check every {_inet_check_h:g}h")
+
         while _running:
             # Read battery (INA226 is fast and reliable)
             on_mains = outage_mgr.power_state == PowerState.MAINS
@@ -751,6 +767,25 @@ def main():
                 except Exception as e:
                     print(f"[REFERENCE] capture failed: {e}")
                 _next_reference = mono + reference_interval
+
+            # LTE link health check: audit the backup path so we know it
+            # works *before* a real outage needs it. Notifies over the
+            # normal internet link if the LTE link is down.
+            if _next_lte_check is not None and mono >= _next_lte_check:
+                try:
+                    notifier.run_lte_check()
+                except Exception as e:  # never let a check kill the loop
+                    print(f"[CONN] LTE check failed: {e}")
+                _next_lte_check = mono + _lte_check_h * 3600.0
+
+            # Internet connectivity check: if the normal WAN is down, the
+            # alert is pushed out through the LTE modem instead.
+            if _next_inet_check is not None and mono >= _next_inet_check:
+                try:
+                    notifier.run_internet_check()
+                except Exception as e:
+                    print(f"[CONN] Internet check failed: {e}")
+                _next_inet_check = mono + _inet_check_h * 3600.0
 
             time.sleep(poll_interval)
 

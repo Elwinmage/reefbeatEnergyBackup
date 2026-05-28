@@ -11,6 +11,8 @@ Notification events:
   - SoC level change (eco / survival / critical)
   - SoC critical alert (repeated)
   - Network failover status (hotspot activated, etc.)
+  - LTE link periodic health check failed
+  - Normal internet connectivity lost (alert sent via LTE)
 
 Configuration (config.json):
   "notifications": {
@@ -28,8 +30,23 @@ Configuration (config.json):
           "interface": "auto",
           "check_url": "http://192.168.8.1/api/monitoring/status"
       },
+      "connectivity": {
+          "lte_check_interval_h": 8,
+          "internet_check_interval_h": 8,
+          "internet_check_host": "8.8.8.8",
+          "internet_check_interfaces": ["eth0", "wlan0"]
+      },
       "cooldown_s": 300
   }
+
+Connectivity checks (driven by the main loop):
+  - lte_check_interval_h:      test the LTE link every X hours (0 = off).
+                               Notifies (via Wi-Fi/internet) if the LTE
+                               link is down, so the failover path is known
+                               to be healthy *before* a real outage.
+  - internet_check_interval_h: test the normal internet link every X hours
+                               (0 = off). If down, the alert is forced out
+                               through the LTE modem.
 """
 
 import subprocess
@@ -272,6 +289,9 @@ class Notifier:
         self._lte_enabled = lte_cfg.get("enabled", False)
         self._lte = LteModem(lte_cfg) if self._lte_enabled else None
 
+        # Periodic connectivity checks config (intervals in hours).
+        self._conn_cfg = self._cfg.get("connectivity", {})
+
         if self._enabled:
             if not self._ntfy_topic:
                 print("[NOTIF] WARNING: ntfy topic not configured")
@@ -351,6 +371,94 @@ class Notifier:
                 print(f"[NOTIF] LTE error: {e}")
 
         print(f"[NOTIF] Failed to send: {title}")
+        return False
+
+    def _send_via_lte(self, title: str, message: str,
+                      priority: str = "default",
+                      tags: str = "") -> bool:
+        """Send a notification *forced* through the LTE modem.
+
+        Used when the normal internet link is known to be down: skip the
+        Wi-Fi attempt entirely and push straight out over the cellular
+        interface with curl --interface.
+        """
+        if not (self._lte_enabled and self._lte and self._lte.available):
+            print("[NOTIF] LTE not available, cannot force-send")
+            return False
+
+        url = f"{self._ntfy_server}/{self._ntfy_topic}"
+        try:
+            iface = self._lte.interface
+            if not (iface and self._lte.is_connected()):
+                print("[NOTIF] LTE modem not connected to cellular network")
+                return False
+            result = subprocess.run([
+                "curl", "-s", "--interface", iface,
+                "-H", f"Title: {title}",
+                "-H", f"Priority: {priority}",
+                "-H", f"Tags: {tags}",
+                "-d", message,
+                url
+            ], capture_output=True, timeout=15)
+            if result.returncode == 0:
+                print(f"[NOTIF] Sent via LTE ({iface}): {title}")
+                return True
+            print(f"[NOTIF] LTE send failed: {result.stderr.decode()[:100]}")
+        except Exception as e:
+            print(f"[NOTIF] LTE error: {e}")
+        return False
+
+    # =========================================================================
+    # Connectivity helpers
+    # =========================================================================
+
+    def lte_is_healthy(self) -> bool:
+        """Return True if the LTE link is detected and connected to cellular.
+
+        Re-runs detection each time (the USB modem may have been plugged in
+        or dropped since startup) before checking the cellular connection.
+        """
+        if not (self._lte_enabled and self._lte):
+            return False
+        # detect() refreshes the interface; is_connected() checks the link.
+        if not self._lte.detect():
+            return False
+        return self._lte.is_connected()
+
+    @property
+    def lte_enabled(self) -> bool:
+        return self._lte_enabled
+
+    def internet_is_up(self) -> bool:
+        """Check normal internet connectivity over the WAN interfaces.
+
+        We ping a public host *bound to each WAN interface in turn*
+        (default: eth0 then wlan0) rather than over the default route.
+        Internet is considered up as soon as one of them succeeds.
+
+        Binding explicitly with -I matters: during a hotspot failover the
+        4G modem may become the default route, so a plain ping would
+        succeed over LTE and mask a real WAN outage. We only want to count
+        the normal links here.
+
+        If an interface in the list is absent/down, its ping just fails and
+        we fall through to the next one. If none are reachable, the WAN is
+        considered down.
+        """
+        host = self._conn_cfg.get("internet_check_host", "8.8.8.8")
+        ifaces = self._conn_cfg.get("internet_check_interfaces",
+                                    ["eth0", "wlan0"])
+        for iface in ifaces:
+            try:
+                result = subprocess.run(
+                    ["ping", "-c", "1", "-W", "3", "-I", iface, host],
+                    capture_output=True, timeout=6,
+                )
+                if result.returncode == 0:
+                    return True
+            except Exception:
+                # Interface missing, down, or ping error -> try the next one.
+                continue
         return False
 
     # =========================================================================
@@ -468,6 +576,80 @@ class Notifier:
             priority=self._priority_map.get("info", "default"),
             tags="satellite,wifi",
         )
+
+    # =========================================================================
+    # Periodic connectivity check helpers + notifications
+    # =========================================================================
+
+    def lte_check_interval_h(self) -> float:
+        """Interval (hours) for the periodic LTE health check. 0 = disabled.
+
+        Defaults to 8h. The check is only meaningful when LTE failover is
+        enabled, so it is forced to 0 (off) otherwise.
+        """
+        if not self._lte_enabled:
+            return 0.0
+        return float(self._conn_cfg.get("lte_check_interval_h", 8))
+
+    def internet_check_interval_h(self) -> float:
+        """Interval (hours) for the periodic internet check. 0 = disabled."""
+        return float(self._conn_cfg.get("internet_check_interval_h", 8))
+
+    def run_lte_check(self) -> bool:
+        """Test the LTE link and notify if it is down.
+
+        Returns the link health (True = healthy). The "down" notification
+        goes out over the normal internet link (which is, by assumption,
+        still up since we are only auditing the backup path here).
+        """
+        if not self._enabled or not self._lte_enabled:
+            return False
+        healthy = self.lte_is_healthy()
+        if healthy:
+            print("[CONN] LTE link OK")
+            return True
+        print("[CONN] LTE link DOWN")
+        if not self._can_send("lte_down"):
+            return False
+        self._send_ntfy(
+            title="Liaison 4G/LTE en panne",
+            message=(
+                "Le test periodique de la liaison 4G a echoue.\n"
+                "Le failover par 4G ne fonctionnera pas en cas de coupure.\n"
+                "Verifiez le modem USB / l'abonnement."
+            ),
+            priority=self._priority_map.get("outage", "high"),
+            tags="signal_strength,warning",
+        )
+        return False
+
+    def run_internet_check(self) -> bool:
+        """Test the normal internet link and notify (via LTE) if it is down.
+
+        Returns the link health (True = up). When down, the alert is forced
+        through the LTE modem since the normal path obviously cannot carry
+        it.
+        """
+        if not self._enabled:
+            return False
+        if self.internet_is_up():
+            print("[CONN] Internet link OK")
+            return True
+        print("[CONN] Internet link DOWN")
+        if not self._can_send("internet_down"):
+            return False
+        # Normal WAN is down: the only way out is the LTE modem.
+        self._send_via_lte(
+            title="Connexion internet perdue",
+            message=(
+                "La connexion internet normale ne repond plus.\n"
+                "Cette alerte a ete envoyee via la 4G/LTE.\n"
+                "Verifiez la box / le routeur."
+            ),
+            priority=self._priority_map.get("outage", "high"),
+            tags="globe_with_meridians,warning",
+        )
+        return False
 
 
 # =============================================================================

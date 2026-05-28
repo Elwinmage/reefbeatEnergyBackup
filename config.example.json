@@ -120,6 +120,12 @@
       "interface": "auto",
       "check_url": "http://192.168.8.1/api/monitoring/status"
     },
+    "connectivity": {
+      "lte_check_interval_h": 8,
+      "internet_check_interval_h": 8,
+      "internet_check_host": "8.8.8.8",
+      "internet_check_interfaces": ["eth0", "wlan0"]
+    },
     "cooldown_s": 300
   },
   "maintenance": {
