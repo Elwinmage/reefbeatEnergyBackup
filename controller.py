@@ -617,19 +617,38 @@ class PumpController:
 
     def _http_send(self, ip: str, path: str, payload: Any = "",
                    method: str = "put") -> bool:
-        """Send a request (PUT/POST/DELETE) to a ReefBeat device."""
+        """Send a request (PUT/POST/DELETE) to a ReefBeat device.
+
+        The body is always sent as real JSON via requests' json= parameter.
+        As a safety net, if payload arrives as a string that is itself JSON
+        (e.g. it got serialized somewhere upstream), we parse it back to an
+        object first. Passing a JSON *string* to json= would double-encode
+        it — requests would wrap it in quotes and the firmware rejects it
+        with "could not parse the received JSON".
+        """
         if not REQUESTS_AVAILABLE:
             return False
         url = f"http://{ip}{path}"
+
+        # Normalize the payload so json= always gets a dict/list, never a
+        # pre-serialized JSON string (which would be double-encoded).
+        body = payload
+        if isinstance(body, str) and body not in ("",):
+            try:
+                body = json.loads(body)
+            except (ValueError, TypeError):
+                # Not JSON; leave as-is (caller may intend a raw string).
+                pass
+
         try:
             if method == "put":
-                r = requests.put(url, json=payload, timeout=5)
+                r = requests.put(url, json=body, timeout=5)
             elif method == "post":
                 # Empty payload for actions like /off; JSON for others.
-                if payload == "" or payload is None:
+                if body == "" or body is None:
                     r = requests.post(url, timeout=5)
                 else:
-                    r = requests.post(url, json=payload, timeout=5)
+                    r = requests.post(url, json=body, timeout=5)
             elif method == "delete":
                 r = requests.delete(url, timeout=5)
             else:
@@ -638,7 +657,17 @@ class PumpController:
 
             if r.ok:
                 return True
-            print(f"    [HTTP] {method.upper()} {url} -> {r.status_code}")
+            # Include the device's response body: ReefBeat firmwares return a
+            # short JSON/text explaining WHY a 400 was rejected (e.g. which
+            # field is invalid), which is essential for diagnosing restores.
+            detail = ""
+            try:
+                txt = r.text.strip()
+                if txt:
+                    detail = f" | {txt[:200]}"
+            except Exception:
+                pass
+            print(f"    [HTTP] {method.upper()} {url} -> {r.status_code}{detail}")
             return False
         except requests.exceptions.RequestException as e:
             print(f"    [HTTP] {method.upper()} {url} -> unreachable "
@@ -771,7 +800,25 @@ class PumpController:
         return True
 
     def _rswave_restore(self, ctrl: dict, snapshot: Dict[str, Any]) -> bool:
-        """Push the saved /auto payload back to the device."""
+        """
+        Push the saved /auto schedule back to the device.
+
+        Intervals are pushed ONE AT A TIME inside a single edit cycle:
+          POST /auto/init      {"uid": op_uid}
+          POST /auto           {"intervals": [interval_0]}
+          POST /auto           {"intervals": [interval_1]}
+          ...                  (one POST per interval — they accumulate)
+          POST /auto/complete  {"uid": op_uid}
+          POST /auto/apply     {"uid": op_uid}
+
+        Why one at a time: the older ESP8266-based ReefWave firmware has a
+        small JSON parse buffer and rejects a single POST carrying 3+
+        intervals ("could not parse the received JSON"), even though the
+        device happily STORES and runs 5+ intervals (the app pushes them
+        incrementally too). Pushing them individually keeps each request
+        tiny, and the firmware appends them. This also works on the newer
+        ESP32 firmware, so it's a single code path for both.
+        """
         import uuid
         ip = ctrl["ip"]
         auto = snapshot.get("auto")
@@ -779,14 +826,19 @@ class PumpController:
             print(f"    [SNAP] {self._ctrl_label(ctrl)}: invalid snapshot")
             return False
 
+        intervals = auto.get("intervals")
+        if not isinstance(intervals, list) or not intervals:
+            print(f"    [SNAP] {self._ctrl_label(ctrl)}: no intervals to restore")
+            return False
+
         op_uid = str(uuid.uuid4())
-        body = dict(auto)
-        body.pop("uid", None)  # uid is owned by the init/complete/apply cycle
 
         if not self._http_send(ip, "/auto/init", {"uid": op_uid}, "post"):
             return False
-        if not self._http_send(ip, "/auto", body, "post"):
-            return False
+        # Push each interval in its own small request; the device accumulates.
+        for iv in intervals:
+            if not self._http_send(ip, "/auto", {"intervals": [iv]}, "post"):
+                return False
         if not self._http_send(ip, "/auto/complete", {"uid": op_uid}, "post"):
             return False
         if not self._http_send(ip, "/auto/apply", {"uid": op_uid}, "post"):

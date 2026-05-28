@@ -12,17 +12,37 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **Instant outage detection** via 230V relay on GPIO
 - **Progressive pump degradation** — SoC-based levels auto-computed from a target autonomy
 - **Per-device control** — each ReefWave / ReefRun / Skimmer gets its own intensity per level
-- **3-level network failover** — normal Wi-Fi → rejoin → autonomous hotspot
+- **3-level network failover** — normal Wi-Fi → rejoin → autonomous hotspot with MAC whitelist, DHCP reservations and automatic pump IP remapping
+- **Robust recovery** — pump config snapshots (pre-outage + hourly reference), restore with retry and a manual CLI, periodic health-check
 - **Push notifications** — via [ntfy.sh](https://ntfy.sh) (free, no account required) + 4G LTE failover
 - **4G internet gateway** — when hotspot is active, routes ReefBeat traffic through 4G so the Red Sea mobile app keeps working
-- **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
+- **Home Assistant integration** — MQTT auto-discovery (sensors + charger if Victron + test entities)
 - **MQTT buffer with replay** — data during HA outage is never lost
-- **Auto-detection** — scans your network for ReefBeat devices during setup
+- **Auto-detection** — scans your network for ReefBeat devices during setup, collects their MACs
+- **Built-in test** — test level to verify pump control (speed + on/off) and a timed Wi-Fi cut, without waiting for a real outage
 - **Self-update** — checks GitHub for new versions, HA update entity with "Install" button
 - **Scheduled reboot** — automatic RPi reboot via cron, skipped if on battery
 - **Bilingual** — FR/EN interface based on system locale
 
 ## 📋 Table of contents
+
+- [Quick install](#-quick-install)
+- [Service management](#-service-management)
+- [Hardware mounting levels](#-hardware-mounting-levels)
+  - [Level 1 — Basic setup](#level-1--basic-setup)
+  - [Level 2 — Normal setup (recommended)](#level-2--normal-setup-recommended)
+  - [Level 3 — Advanced setup](#level-3--advanced-setup)
+  - [Increasing autonomy](#increasing-autonomy)
+- [Configuration](#-configuration)
+- [Home Assistant](#-home-assistant)
+- [Network failover](#-network-failover--complete-flow)
+- [Reliability & recovery](#-reliability--recovery)
+- [Push notifications](#-push-notifications-ntfysh)
+- [Battery test blueprint](#-automatic-battery-test-blueprint)
+- [Project structure](#-project-structure)
+- [CLI tools](#-cli-tools)
+- [ReefWave and cloud sync](#-important-reefwave-and-cloud-synchronization)
+- [Troubleshooting](#-troubleshooting)
 
 - [Quick install](#-quick-install)
 - [Hardware mounting levels](#-hardware-mounting-levels)
@@ -568,6 +588,18 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
 
+### Control entities (test)
+
+These entities let you test the system without waiting for a real outage:
+
+| Entity | Description |
+|---|---|
+| `switch.reef_battery_test_plan` | Applies the test level to the pumps (reduced speed + one pump off via `per_device`), no outage needed. OFF = restore. |
+| `button.reef_battery_test_pumps` | Runs an on-demand pump command test: applies the test level, holds it a few seconds, then restores automatically. |
+| `number.reef_battery_wifi_cut_min` | Cuts the Pi's Wi-Fi for N minutes (0 = none) to observe network failover. The link is always restored automatically. |
+
+These entities require `test_level` (and `test_hold_seconds`) configured in `config.json`.
+
 ### MQTT buffer
 
 During an outage, HA and the MQTT broker are almost always unavailable (they're on the same infrastructure as the mains). The service writes all measurements to `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` and replays them automatically when the broker comes back → you get the complete curve after the fact, with no gaps.
@@ -611,10 +643,27 @@ Power outage detected (relay GPIO, instant)
     │
     └── Step 3: create mirror hotspot (same SSID + password on wlan0)
             │
+            ├── MAC whitelist: only the controlled pumps (MACs collected
+            │    during setup via /wifi) may associate. Without it, every
+            │    Wi-Fi device in the house falls back onto the hotspot,
+            │    saturates the Pi's radio and starves the pumps of an IP.
+            │
             ├── ReefBeat devices auto-reconnect to RPi hotspot
             │    (they already know the SSID/password)
             │
+            ├── Addressing: on the hotspot the pumps live on 192.168.4.0/24
+            │    (≠ the 192.168.0.0/24 LAN). Each pump keeps its last octet
+            │    (192.168.0.83 → 192.168.4.83) via a per-MAC DHCP reservation.
+            │    The code remaps the IPs automatically (by MAC, falling back
+            │    to octet substitution) so pings and commands follow them.
+            │
             ├── RPi controls pumps locally via HTTP API
+            │
+            ├── Waiting for pumps: some (RSRUN) only rejoin after their Wi-Fi
+            │    watchdog (~15 min). Failover waits up to 900s and returns as
+            │    soon as ALL are present, logging progress (n/total). The eco
+            │    level is applied immediately to already-reachable pumps,
+            │    without waiting for the slow ones.
             │
             ├── If 4G modem (E3372h or USB tethering) is available:
             │       │
@@ -632,24 +681,70 @@ Power outage detected (relay GPIO, instant)
     │
     ├── Battery SoC → adjusts pump intensity (eco → survival → critical)
     ├── Wi-Fi availability → if home Wi-Fi reappears, switch back from hotspot
-    └── 4G connectivity → route notifications and ReefBeat traffic
+    ├── 4G connectivity → route notifications and ReefBeat traffic
+    └── Pump health (health-check) → while on hotspot, checks every 60s who
+         responds, re-remaps IPs, and re-applies the eco level to pumps that
+         have just rejoined (catches slow/late devices)
 
 
 Power restored (relay GPIO, instant)
     │
     ├── Hotspot deactivated (if active), NAT rules cleaned
     │
+    ├── Pump IPs restored to their original LAN addresses (192.168.0.x)
+    │
     ├── RPi reconnects to Ethernet (eth0) when switches come back
     │    (automatic — Linux prioritizes eth0 over wlan0)
     │
     ├── ReefBeat devices reconnect to home router Wi-Fi
     │
-    ├── Pump intensity restored to 100%
+    ├── Pump intensity restored from the on-disk snapshot. Pumps can be slow
+    │    to rejoin Wi-Fi on power return, so the restore retries in the
+    │    background until all are restored (and can be re-run manually with
+    │    `restore_pumps.py`).
     │
     ├── MQTT buffer replayed → HA gets the complete discharge curve
     │
     └── ntfy notification: "Power restored after Xh, SoC Y%"
 ```
+
+---
+
+## 🛡️ Reliability & recovery
+
+Several mechanisms keep the system consistent even when something goes wrong (Pi reboot mid-outage, a pump unreachable at the wrong moment, a device slow to rejoin).
+
+### Pump config snapshots
+
+Before reducing a pump, its original configuration (RSRUN schedule, RSWAVE wave program) is saved to disk under `/var/lib/reefbeat-energy-backup/snapshots/`. On power return it is re-applied exactly, then the snapshot is removed. A lingering snapshot means "restore still pending" — so it survives a Pi reboot.
+
+In addition, a **reference snapshot** is captured periodically (hourly by default) during nominal operation, under `/var/lib/reefbeat-energy-backup/reference/`. These references are never deleted and act as a safety net: if the capture at the start of an outage fails (pump already unreachable), the system falls back to the last known reference.
+
+### Robust restore with retry
+
+On power return, Red Sea pumps can be slow to rejoin Wi-Fi. The restore does an immediate pass, then **retries in the background** (every 30s, up to 40 attempts by default) while snapshots remain. It can also be re-run manually:
+
+```bash
+python3 restore_pumps.py            # re-run restore from snapshots
+python3 restore_pumps.py --list     # list pending pumps, no action
+python3 restore_pumps.py --retries 20 --interval 20
+```
+
+### Periodic health-check
+
+The system regularly probes each pump and logs a summary line — who responds, in which mode, and from which network mode:
+
+```
+[HEALTH] ✅ 4/4 devices reachable | net=hotspot | battery | RSWAVE45-...=auto, ...
+```
+
+The cadence adapts: 5 min on mains, 15 min on battery (energy saving), **60s on the hotspot** (to quickly catch a pump that is slow to rejoin). On battery, a pump that transitions from unreachable to reachable has the current eco level re-applied automatically.
+
+### Robust SoC computation
+
+Coulomb counting clamps its integration step: an abnormally long loop cycle (a BLE read timing out, system load) can no longer cause an artificial SoC jump. On battery, blocking BLE reads to the (unreachable) charger are skipped and stale charger telemetry is purged.
+
+> ⚠️ **Pi draw not measured**: the Pi is powered downstream of the INA226 shunt (battery 5V port), so its consumption is not counted in coulomb counting. Real autonomy is therefore slightly lower than the estimate.
 
 ---
 
@@ -871,6 +966,28 @@ However, the **Red Sea cloud and mobile app are unaware of this change**. The cl
 
 > 💡 This limitation only affects ReefWave. ReefRun (return pumps, skimmers) are controlled locally and stay in sync with the app at all times.
 
+### ReefWave firmware compatibility (ESP8266 vs ESP32)
+
+There are two ReefWave generations, and reefbeat⚡Backup handles both:
+
+- **ESP32** (recent firmware, e.g. `0.10.0`) — plenty of memory, accepts a full program in a single request.
+- **ESP8266** (older firmware, e.g. `3.0.0`) — very limited memory. Its JSON parse buffer is too small to swallow a `POST /auto` carrying 3 or more intervals at once: it replies `HTTP 400 "could not parse the received JSON"`, **even though it stores and runs 5+ intervals perfectly fine** (the Red Sea app pushes them incrementally).
+
+To stay compatible with both, the wave-program restore **sends intervals one at a time** inside a single edit cycle:
+
+```
+POST /auto/init       {"uid": op_uid}
+POST /auto            {"intervals": [interval_0]}
+POST /auto            {"intervals": [interval_1]}
+…                     (one POST per interval — the device accumulates them)
+POST /auto/complete   {"uid": op_uid}
+POST /auto/apply      {"uid": op_uid}
+```
+
+Each request stays tiny, so the ESP8266 buffer is enough and the firmware appends the intervals. This also works on the ESP32: a single code path for both generations.
+
+> 💡 The same care applies to the `ha-reefbeat` Home Assistant integration (editing a wave via the local API): it also pushes intervals one at a time.
+
 ---
 
 ## 🐛 Troubleshooting
@@ -882,6 +999,16 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues:
 - Victron `'Scanner' has no attribute 'scan'` → incompatible `victron-ble` version
 - MQTT discovery sensors missing → check credentials and `base_topic`
 - `runtime_h` shows `-1.0` → update to latest version (fixed)
+
+**Backup hotspot specific:**
+
+- A pump stays `DOWN` on the hotspot → check its MAC is in `controller_mac_ips` (otherwise the whitelist rejects it). Re-run `configure.py` to (re)collect it via `/wifi`.
+- A pump takes a long time to rejoin → some models (RSRUN) only switch over after their Wi-Fi watchdog (~15 min). Failover waits up to 900s; let the test run long enough. The watchdog is adjustable on the Red Sea side.
+- DHCP reservations not honored → the hotspot DHCP range must cover the pumps' last octets. Auto-migration widens the range to `.250` at startup; check `hotspot.dhcp_end` in `config.json`.
+- `[DHCP]` logs showing unknown devices → those are stale leases; they are now purged on activation and only whitelisted pumps are shown.
+- ReefWave restore failing with `HTTP 400 "could not parse the received JSON"` → old ESP8266 firmware whose JSON buffer is too small for a multi-interval program sent in one block. The restore now sends intervals one at a time (see "ReefWave firmware compatibility"), which fixes it. Updating the pump firmware via the Red Sea app is recommended but not required.
+
+> 💡 At startup the service prints `[CONFIG] Auto-migrated settings` if it filled in/fixed settings from an older `config.json` (DHCP range, reconnect timeout, health-check cadence). Edit `config.json` to make those values permanent.
 
 ---
 

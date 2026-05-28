@@ -12,10 +12,12 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
 - **Détection de coupure instantanée** via relais 230 V sur GPIO
 - **Dégradation progressive des pompes** — niveaux SoC calculés automatiquement à partir d'une cible d'autonomie
 - **Contrôle individuel** — chaque ReefWave / ReefRun / Skimmer reçoit sa propre intensité par niveau
-- **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome
-- **Intégration Home Assistant** — auto-discovery MQTT (10 capteurs + chargeur si Victron)
+- **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome avec liste blanche MAC, réservations DHCP et remappage d'IP automatique des pompes
+- **Récupération robuste** — snapshots de config pompes (pré-coupure + référence horaire), restauration avec retry et CLI manuelle, health-check périodique
+- **Intégration Home Assistant** — auto-discovery MQTT (capteurs + chargeur si Victron + entités de test)
 - **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
-- **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
+- **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration, relève leurs MAC
+- **Test intégré** — palier de test pour vérifier le pilotage des pompes (vitesse + on/off) et coupure Wi-Fi temporisée, sans attendre une vraie coupure
 - **Mise à jour automatique** — vérifie GitHub pour les nouvelles versions, entité `update` dans HA avec bouton "Installer"
 - **Redémarrage programmé** — reboot automatique du RPi via cron, annulé si sur batterie
 - **Bilingue** — interface FR/EN selon la locale système
@@ -29,9 +31,12 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
   - [Niveau 3 — Montage avancé](#niveau-3--montage-avancé)
   - [Augmentation d'autonomie](#augmentation-dautonomie)
 - [Configuration](#-configuration)
+- [Failover réseau](#-failover-réseau--flux-complet)
+- [Fiabilité & récupération](#-fiabilité--récupération)
 - [Home Assistant](#-home-assistant)
 - [Blueprint test de batterie](#-blueprint-test-automatique-de-batterie)
 - [Structure du projet](#-structure-du-projet)
+- [ReefWave et synchronisation cloud](#-important--reefwave-et-synchronisation-cloud)
 - [Dépannage](#-dépannage)
 
 ---
@@ -532,10 +537,27 @@ Coupure détectée (relais GPIO, instantané)
     │
     └── Étape 3 : création du hotspot miroir (même SSID + mot de passe sur wlan0)
             │
+            ├── Liste blanche MAC : seules les pompes pilotées (MAC relevées
+            │    en configuration via /wifi) peuvent s'associer. Sans ça, tous
+            │    les appareils Wi-Fi de la maison se rabattent sur le hotspot,
+            │    saturent la puce du Pi et empêchent les pompes d'obtenir une IP.
+            │
             ├── Les ReefBeat se reconnectent auto au hotspot du RPi
             │    (ils connaissent déjà le SSID/mot de passe)
             │
+            ├── Adressage : sur le hotspot, les pompes sont sur 192.168.4.0/24
+            │    (≠ du LAN 192.168.0.0/24). Chaque pompe garde son dernier octet
+            │    (192.168.0.83 → 192.168.4.83) via une réservation DHCP par MAC.
+            │    Le code remappe les IP automatiquement (par MAC, repli sur
+            │    substitution d'octet) — pings et commandes suivent les pompes.
+            │
             ├── Le RPi pilote les pompes en local via API HTTP
+            │
+            ├── Attente des pompes : certaines (RSRUN) ne rejoignent qu'après
+            │    leur watchdog Wi-Fi (~15 min). Le failover patiente jusqu'à
+            │    900s et sort dès que TOUTES sont là, en loggant la progression
+            │    (n/total). Le palier d'éco est appliqué immédiatement aux
+            │    pompes déjà joignables, sans attendre les retardataires.
             │
             ├── Si modem 4G (E3372h ou tethering USB) disponible :
             │       │
@@ -553,24 +575,73 @@ Coupure détectée (relais GPIO, instantané)
     │
     ├── SoC batterie → ajuste l'intensité des pompes (eco → survival → critical)
     ├── Disponibilité Wi-Fi → si le Wi-Fi maison réapparaît, rebascule depuis le hotspot
-    └── Connectivité 4G → route les notifications et le trafic ReefBeat
+    ├── Connectivité 4G → route les notifications et le trafic ReefBeat
+    └── Santé des pompes (health-check) → en mode hotspot, vérifie toutes les
+         60s qui répond, re-remappe les IP, et ré-applique le palier d'éco aux
+         pompes qui viennent de rejoindre (rattrapage des retardataires)
 
 
 Retour du courant (relais GPIO, instantané)
     │
     ├── Hotspot désactivé (si actif), règles NAT nettoyées
     │
+    ├── IP des pompes restaurées à leurs adresses LAN d'origine (192.168.0.x)
+    │
     ├── Le RPi repasse sur Ethernet (eth0) quand les switchs reviennent
     │    (automatique — Linux priorise eth0 sur wlan0)
     │
     ├── Les ReefBeat se reconnectent au Wi-Fi du routeur
     │
-    ├── Intensité des pompes restaurée à 100%
+    ├── Intensité des pompes restaurée à leur config d'origine (depuis le
+    │    snapshot disque). Au retour du courant les pompes peuvent mettre du
+    │    temps à rejoindre le Wi-Fi : la restauration retente en arrière-plan
+    │    jusqu'à ce que toutes soient restaurées (et peut être relancée à la
+    │    main via `restore_pumps.py`).
     │
     ├── Buffer MQTT rejoué → HA reçoit la courbe de décharge complète
     │
     └── Notification ntfy : "Courant rétabli après Xh, SoC Y%"
 ```
+
+---
+
+## 🛡️ Fiabilité & récupération
+
+Plusieurs mécanismes garantissent que le système reste cohérent même en cas d'imprévu (reboot du Pi en pleine coupure, pompe injoignable au mauvais moment, device lent à rejoindre).
+
+### Snapshots de configuration des pompes
+
+Avant de réduire une pompe, sa configuration d'origine (planning RSRUN, programme de vagues RSWAVE) est sauvegardée sur disque dans `/var/lib/reefbeat-energy-backup/snapshots/`. Au retour du courant, cette config est ré-appliquée exactement, puis le snapshot est supprimé. Un snapshot qui subsiste signifie « restauration encore en attente » — il survit donc à un reboot du Pi.
+
+En complément, un **snapshot de référence** est capturé périodiquement (par défaut toutes les heures) en fonctionnement nominal, dans `/var/lib/reefbeat-energy-backup/reference/`. Ces références ne sont jamais supprimées et servent de filet : si la capture au début d'une coupure échoue (pompe déjà injoignable), le système retombe sur la dernière référence connue.
+
+### Restauration robuste avec retry
+
+Au retour du courant, les pompes Red Sea peuvent mettre du temps à rejoindre le Wi-Fi. La restauration fait une première passe immédiate, puis **retente en arrière-plan** (par défaut toutes les 30s, jusqu'à 40 tentatives) tant que des snapshots subsistent.
+
+Si la restauration automatique échoue (pompes hors ligne trop longtemps), elle peut être relancée à la main :
+
+```bash
+python3 restore_pumps.py            # relance la restauration depuis les snapshots
+python3 restore_pumps.py --list     # liste les pompes en attente, sans agir
+python3 restore_pumps.py --retries 20 --interval 20
+```
+
+### Health-check périodique
+
+Le système sonde régulièrement chaque pompe et trace une ligne de synthèse dans les logs, indiquant qui répond, dans quel mode (`auto`/`manual`/`off`) et **depuis quel mode réseau** (client / rejoin / hotspot) :
+
+```
+[HEALTH] ✅ 4/4 devices reachable | net=hotspot | battery | RSWAVE45-...=auto, ...
+```
+
+La cadence s'adapte : 5 min sur secteur, 15 min sur batterie (économie d'énergie), **60s en mode hotspot** (pour rattraper rapidement une pompe lente à rejoindre). En mode batterie, une pompe qui passe de injoignable à joignable se voit ré-appliquer automatiquement le palier d'éco courant.
+
+### Calcul du SoC robuste
+
+Le coulomb counting borne son pas d'intégration : un cycle de boucle anormalement long (lecture BLE qui timeoute, charge système) ne peut plus provoquer un saut artificiel du SoC. Sur batterie, les lectures BLE bloquantes vers le chargeur (injoignable de toute façon) sont sautées, et la télémétrie chargeur figée est purgée.
+
+> ⚠️ **Conso du Pi non mesurée** : le Pi étant alimenté en aval du shunt INA226 (port 5V de la batterie), sa consommation n'est pas comptée dans le coulomb counting. L'autonomie réelle est donc légèrement inférieure à l'estimation. Voir la note dans le schéma niveau 2.
 
 ---
 
@@ -601,6 +672,18 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 | `sensor.reef_battery_charger_current` | Courant de sortie chargeur (A) |
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
+
+### Entités de contrôle (test)
+
+Ces entités servent à tester le système sans attendre une vraie coupure :
+
+| Entité | Description |
+|---|---|
+| `switch.reef_battery_test_plan` | Applique le palier de test aux pompes (vitesse réduite + extinction d'une pompe via `per_device`), sans coupure. OFF = restauration. |
+| `button.reef_battery_test_pumps` | Lance un test des commandes pompes à la demande : applique le palier de test, le maintient quelques secondes, puis restaure automatiquement. |
+| `number.reef_battery_wifi_cut_min` | Coupe le Wi-Fi du Pi pendant N minutes (0 = aucune) pour observer le failover réseau. Le lien est toujours rétabli automatiquement. |
+
+Ces entités nécessitent `test_level` (et `test_hold_seconds`) configurés dans `config.json`.
 
 ### Buffer MQTT
 
@@ -645,9 +728,17 @@ Présence "user_y" détectée à la maison ?
               └─── Accept
                       │
                       ▼
+              (Option) Test des commandes pompes : applique brièvement le
+              palier de test (vitesse réduite + on/off), vérifie que les
+              pompes réagissent, puis restaure — sans coupure
+                      │
+                      ▼
               Disjoncteur OFF
               SoC / tension / puissance initiaux sauvegardés
               Calcul du forecast (puissance × durée / capacité)
+                      │
+                      ▼
+              (Option) Coupure Wi-Fi pendant N min pour exercer le failover
                       │
                       ▼
               Attendre 40 min, OU abort immédiat si tension < seuil
@@ -715,6 +806,7 @@ monitor.py                          Backend INA226 + auxiliaire Victron BLE
 outage.py                           Détection de coupure (relais GPIO)
 hotspot.py                          Failover réseau 3 niveaux
 controller.py                       Contrôle pompes + orchestration coupure
+restore_pumps.py                    Restauration manuelle des pompes (CLI)
 mqtt_buffer.py                      Buffer MQTT avec replay
 power_estimation.py                 Tables de conso + builder de scénario
 ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
@@ -724,6 +816,10 @@ docs/
   images/                           Images des composants pour la doc
 blueprints/
   reef_battery_test.yaml            Blueprint HA de test de batterie
+/var/lib/reefbeat-energy-backup/
+  snapshots/                        Config pompes pré-coupure (restauration)
+  reference/                        Snapshots de référence horaires (filet)
+  mqtt/                             Buffer MQTT (replay)
 ```
 
 ---
@@ -768,6 +864,28 @@ Cependant, le **cloud Red Sea et l'app mobile ne sont pas informés** de ce chan
 
 > 💡 Cette limitation ne concerne que les ReefWave. Les ReefRun (pompes de remontée, skimmers) sont contrôlés localement et restent synchronisés avec l'app en permanence.
 
+### Compatibilité firmware ReefWave (ESP8266 vs ESP32)
+
+Il existe deux générations de ReefWave, et reefbeat⚡Backup gère les deux :
+
+- **ESP32** (firmware récent, ex. `0.10.0`) — beaucoup de mémoire, accepte un programme complet en une seule requête.
+- **ESP8266** (firmware plus ancien, ex. `3.0.0`) — mémoire très limitée. Son buffer de parsing JSON est trop petit pour avaler un `POST /auto` contenant 3 intervals ou plus d'un coup : il répond alors `HTTP 400 "could not parse the received JSON"`, **alors même qu'il stocke et exécute parfaitement 5 intervals ou plus** (l'app Red Sea les pousse de façon incrémentale).
+
+Pour être compatible avec les deux, la restauration du programme de vagues **envoie les intervals un par un** à l'intérieur d'un seul cycle d'édition :
+
+```
+POST /auto/init       {"uid": op_uid}
+POST /auto            {"intervals": [interval_0]}
+POST /auto            {"intervals": [interval_1]}
+…                     (un POST par interval — l'appareil les accumule)
+POST /auto/complete   {"uid": op_uid}
+POST /auto/apply      {"uid": op_uid}
+```
+
+Chaque requête reste minuscule, donc le buffer de l'ESP8266 suffit, et le firmware empile les intervals. Cette méthode fonctionne aussi sur l'ESP32 : un seul chemin de code pour les deux générations.
+
+> 💡 La même précaution s'applique à l'intégration Home Assistant `ha-reefbeat` (édition d'une vague via l'API locale) : elle pousse également les intervals un par un.
+
 ---
 
 ## 🐛 Dépannage
@@ -778,6 +896,16 @@ Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour les problèmes courants :
 - INA226 lit `0.000A` → vérifier le câblage en série du shunt
 - Victron `'Scanner' has no attribute 'scan'` → version `victron-ble` incompatible
 - MQTT discovery sensors absents → vérifier les credentials et le `base_topic`
+
+**Spécifique au hotspot de secours :**
+
+- Une pompe reste `DOWN` sur le hotspot → vérifier que sa MAC est bien dans `controller_mac_ips` (sinon elle est rejetée par la liste blanche). Relancer `configure.py` pour la (re)collecter via `/wifi`.
+- Une pompe met longtemps à rejoindre → certains modèles (RSRUN) ne rebasculent qu'après leur watchdog Wi-Fi (~15 min). Le failover patiente jusqu'à 900s ; laissez le test tourner assez longtemps. Le watchdog est réglable côté Red Sea.
+- Les réservations DHCP ne sont pas honorées → la plage DHCP du hotspot doit couvrir les derniers octets des pompes. La migration auto élargit la plage à `.250` au démarrage ; vérifiez `hotspot.dhcp_end` dans `config.json`.
+- Logs `[DHCP]` montrant des appareils inconnus → ce sont d'anciens baux ; ils sont désormais purgés à l'activation et seules les pompes whitelistées sont affichées.
+- Restauration ReefWave en `HTTP 400 "could not parse the received JSON"` → firmware ESP8266 ancien dont le buffer JSON est trop petit pour un programme multi-intervals envoyé en bloc. La restauration envoie désormais les intervals un par un (voir « Compatibilité firmware ReefWave »), ce qui règle le problème. Mettre à jour le firmware de la pompe via l'app Red Sea est recommandé mais non requis.
+
+> 💡 Au démarrage, le service affiche `[CONFIG] Auto-migrated settings` s'il a complété/corrigé des réglages d'une `config.json` ancienne (plage DHCP, timeout de reconnexion, cadence health-check). Éditez `config.json` pour rendre ces valeurs permanentes.
 
 ---
 
