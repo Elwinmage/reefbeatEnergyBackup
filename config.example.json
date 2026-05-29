@@ -98,6 +98,9 @@
     }
   },
   "poll_interval_s": 5.0,
+  "energy_meter": {
+    "save_interval_s": 60.0
+  },
   "updater": {
     "enabled": true,
     "check_interval_h": 6,

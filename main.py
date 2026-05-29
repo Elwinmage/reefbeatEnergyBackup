@@ -27,6 +27,7 @@ from controller import PumpController, OutageManager
 from mqtt_buffer import MqttBuffer
 from notifier import create_notifier
 from updater import create_updater
+from energy import EnergyAccumulator
 
 
 # =============================================================================
@@ -187,7 +188,43 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         # cadence on slow SD cards.
         time.sleep(0.05)
 
-    print(f"[MQTT] Queued {len(sensors)} HA discovery configs")
+    # --- Cumulative energy counters (Energy dashboard) -------------------
+    # These need state_class=total_increasing + device_class=energy + unit
+    # kWh to be eligible in the HA Energy dashboard. They feed the
+    # "Home battery storage" section (charged/discharged) and the
+    # "Individual devices" section (consumed).
+    energy_sensors = [
+        ("Énergie déchargée", "energy_discharged",
+         "{{ value_json.energy_discharged_kwh }}",
+         "mdi:battery-arrow-down-outline"),
+        ("Énergie chargée",   "energy_charged",
+         "{{ value_json.energy_charged_kwh }}",
+         "mdi:battery-arrow-up-outline"),
+        ("Énergie consommée", "energy_consumed",
+         "{{ value_json.energy_consumed_kwh }}",
+         "mdi:lightning-bolt"),
+    ]
+    for name, uid, tpl, icon in energy_sensors:
+        uid_full = f"{device_name}_{uid}"
+        payload = {
+            "name": name,
+            "unique_id": uid_full,
+            "state_topic": f"{base}/sensor/{device_name}/state",
+            "value_template": tpl,
+            "unit_of_measurement": "kWh",
+            "device_class": "energy",
+            "state_class": "total_increasing",
+            "icon": icon,
+            "device": device_info,
+        }
+        buffer.publish(
+            f"{base}/sensor/{uid_full}/config",
+            json.dumps(payload), retain=True,
+        )
+        time.sleep(0.05)
+
+    print(f"[MQTT] Queued {len(sensors)} HA discovery configs "
+          f"+ {len(energy_sensors)} energy counters")
 
 
 def wire_test_commands(client, buffer: "MqttBuffer", cfg: dict,
@@ -486,6 +523,21 @@ def main():
     updater = create_updater(cfg, mqtt_client, install_dir)
     updater.start()
 
+    # --- Energy accumulator (cumulative kWh for the HA Energy dashboard) ---
+    # State path lives alongside pump snapshots so a single bind-mount or
+    # backup covers everything mutable. Save cadence is conservative (60s
+    # default) to limit SD-card wear while bounding worst-case data loss
+    # on unclean shutdown.
+    snap_base = cfg.get("pump_control", {}).get("snapshot_dir") \
+        or "/var/lib/reefbeat-energy-backup"
+    energy_state_path = Path(snap_base) / "energy_state.json"
+    energy_save_interval = float(
+        cfg.get("energy_meter", {}).get("save_interval_s", 60.0))
+    energy_meter = EnergyAccumulator(
+        state_path=energy_state_path,
+        save_interval_s=energy_save_interval,
+    )
+
     # --- Outage detector ---
     detector = create_outage_detector(cfg)
     detector.on_change(outage_mgr.on_power_change)
@@ -665,6 +717,25 @@ def main():
             outage_mgr.update_soc(reading.soc, runtime_h=runtime_h if runtime_h else -1.0)
             status = outage_mgr.get_status()
 
+            # --- Energy accumulator -------------------------------------
+            # Integrate one main-loop tick worth of energy. Charger power
+            # is derived from the (possibly cached) Victron telemetry when
+            # available; on battery it stays None which is fine — the
+            # accumulator falls back to battery_power for the load.
+            charger_power: Optional[float] = None
+            if (reading.charger_voltage is not None
+                    and reading.charger_current is not None):
+                charger_power = (reading.charger_voltage
+                                 * reading.charger_current)
+            try:
+                energy_meter.update(
+                    battery_power_w=reading.power,
+                    charger_power_w=charger_power,
+                    on_mains=on_mains,
+                )
+            except Exception as e:  # never let metering kill the loop
+                print(f"[ENERGY] update failed: {e}")
+
             # State payload
             data = {
                 "voltage": reading.voltage,
@@ -678,6 +749,8 @@ def main():
                 "network_mode": status["network_mode"],
                 "monitor_source": reading.source,
             }
+            # Cumulative energy counters (kWh) for the HA Energy dashboard.
+            data.update(energy_meter.snapshot())
             # Add charger fields only when present (avoids publishing
             # nulls to MQTT for users who haven't configured Victron).
             if reading.charger_source is not None:
@@ -796,6 +869,12 @@ def main():
         monitor.close()
         if victron_aux:
             victron_aux.close()
+        # Persist energy counters so a graceful shutdown loses zero data
+        # (a crash loses at most ~save_interval_s seconds).
+        try:
+            energy_meter.flush()
+        except Exception as e:
+            print(f"[ENERGY] flush on shutdown failed: {e}")
         # Stop the buffer FIRST so the replay thread doesn't try to
         # publish through a client we're about to disconnect.
         mqtt_buffer.stop()
