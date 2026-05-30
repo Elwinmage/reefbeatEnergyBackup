@@ -701,7 +701,7 @@ Les compteurs sont persistés sur disque toutes les 60 s, donc un redémarrage n
 
 Pour un visuel temps réel du flux d'énergie (secteur ↔ batterie ↔ aquarium), la carte communautaire [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) fait très bien le travail :
 
-![Power Flow Card](images/power-flow-card.png)
+![Power Flow Card](docs/images/power-flow-card.png)
 
 Cette visualisation nécessite **deux cartes communautaires** à installer via HACS → Frontend :
 

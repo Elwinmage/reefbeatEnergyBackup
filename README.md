@@ -616,7 +616,7 @@ Counters are persisted to disk every 60 s, so a reboot does not reset the totals
 
 For a real-time visualisation of the energy flow (mains ↔ battery ↔ aquarium), the community card [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) does the job nicely:
 
-![Power Flow Card](images/power-flow-card.png)
+![Power Flow Card](docs/images/power-flow-card.png)
 
 This setup requires **two community cards** installed via HACS → Frontend:
 
