@@ -663,6 +663,9 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 | `sensor.reef_battery_outage_duration` | Durée coupure courante (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 |
+| `sensor.reef_battery_energie_dechargee` | Énergie cumulée sortie de batterie (kWh) — *Energy dashboard* |
+| `sensor.reef_battery_energie_chargee` | Énergie cumulée entrée en batterie (kWh) — *Energy dashboard* |
+| `sensor.reef_battery_energie_consommee` | Conso totale système depuis l'allumage (kWh) — *Energy dashboard* |
 
 **Si Victron BLE est configuré** (niveau 3) :
 
@@ -684,6 +687,101 @@ Ces entités servent à tester le système sans attendre une vraie coupure :
 | `number.reef_battery_wifi_cut_min` | Coupe le Wi-Fi du Pi pendant N minutes (0 = aucune) pour observer le failover réseau. Le lien est toujours rétabli automatiquement. |
 
 Ces entités nécessitent `test_level` (et `test_hold_seconds`) configurés dans `config.json`.
+
+### Tableau de bord Énergie & Power Flow Card
+
+Les trois compteurs `energie_dechargee`, `energie_chargee` et `energie_consommee` ont été déclarés avec `device_class: energy` et `state_class: total_increasing` : ils sont **directement éligibles** dans le tableau de bord Énergie de Home Assistant (*Paramètres → Tableaux de bord → Énergie*) :
+
+- **Stockage batterie** → ajoutez la paire `energie_chargee` (entrée) / `energie_dechargee` (sortie).
+- **Consommation individuelle** → ajoutez `energie_consommee` pour suivre la conso quotidienne / hebdo / mensuelle du système.
+
+Les compteurs sont persistés sur disque toutes les 60 s, donc un redémarrage ne remet pas les totaux à zéro.
+
+#### Power Flow Card Plus
+
+Pour un visuel temps réel du flux d'énergie (secteur ↔ batterie ↔ aquarium), la carte communautaire [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) fait très bien le travail :
+
+![Power Flow Card](images/power-flow-card.png)
+
+La carte attend une puissance instantanée pour chaque nœud, mais on n'expose qu'une *puissance batterie* signée et de la télémétrie chargeur. Deux template sensors permettent de combler les nœuds « secteur » et « charge » :
+
+```yaml
+# configuration.yaml — adapter le préfixe à votre mqtt.device_name
+template:
+  - sensor:
+      # Puissance secteur : sur secteur = sortie chargeur (V × A), sinon 0
+      - name: "Reef Backup Puissance Secteur"
+        unique_id: reef_backup_grid_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% if states('sensor.reef_battery_etat_secteur') == 'on_mains' %}
+            {% set cv = states('sensor.reef_battery_tension_chargeur') | float(0) %}
+            {% set cc = states('sensor.reef_battery_courant_chargeur') | float(0) %}
+            {{ (cv * cc) | round(1) }}
+          {% else %}
+            0
+          {% endif %}
+
+      # Puissance consommée (charge réelle de l'aquarium) :
+      #   - sur batterie : puissance batterie (positive = décharge)
+      #   - sur secteur  : sortie chargeur + puissance batterie (signée :
+      #                    négative pendant la charge, donc soustraite)
+      - name: "Reef Backup Puissance Charge"
+        unique_id: reef_backup_load_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set bp = states('sensor.reef_battery_puissance') | float(0) %}
+          {% if states('sensor.reef_battery_etat_secteur') == 'on_battery' %}
+            {{ [bp, 0] | max | round(1) }}
+          {% else %}
+            {% set cv = states('sensor.reef_battery_tension_chargeur') | float(0) %}
+            {% set cc = states('sensor.reef_battery_courant_chargeur') | float(0) %}
+            {{ [(cv * cc) + bp, 0] | max | round(1) }}
+          {% endif %}
+```
+
+Configuration de la carte :
+
+```yaml
+type: custom:power-flow-card-plus
+title: Reef Battery Backup
+entities:
+  battery:
+    entity: sensor.reef_battery_puissance
+    state_of_charge: sensor.reef_battery_soc_batterie
+    name: Batterie LiFePO4
+    icon: mdi:battery
+    # Convention interne : power > 0 = décharge. La carte attend la
+    # convention inverse (power > 0 = charge), d'où invert_state.
+    invert_state: true
+    display_state: two_way
+    show_state_of_charge: true
+  home:
+    entity: sensor.reef_backup_puissance_charge
+    name: Aquarium
+    icon: mdi:fishbowl-outline
+  grid:
+    entity: sensor.reef_backup_puissance_secteur
+    name: Secteur
+    icon: mdi:transmission-tower
+  individual:
+    - entity: sensor.reef_battery_intensite_pompes
+      name: Pompes
+      icon: mdi:pump
+      color: "#03a9f4"
+      unit_of_measurement: "%"
+clickable_entities: true
+use_new_flow_rate_model: true
+w_decimals: 0
+kw_decimals: 2
+watt_threshold: 1000
+```
+
+> **Note** — adapter le préfixe `reef_battery_*` à votre `mqtt.device_name` (ex. `reef_battery_backup_*`). Si Victron BLE n'est pas installé, le nœud `grid` reste vide en l'absence de mesure secteur — la carte fonctionne tout de même avec uniquement `battery` + `home`.
 
 ### Buffer MQTT
 

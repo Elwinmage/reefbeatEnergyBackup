@@ -578,6 +578,9 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 | `sensor.reef_battery_outage_duration` | Current outage duration (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 |
+| `sensor.reef_battery_energy_discharged` | Cumulative energy out of battery (kWh) — *Energy dashboard* |
+| `sensor.reef_battery_energy_charged` | Cumulative energy into battery (kWh) — *Energy dashboard* |
+| `sensor.reef_battery_energy_consumed` | Total system load since boot (kWh) — *Energy dashboard* |
 
 **If Victron BLE is configured** (level 3):
 
@@ -599,6 +602,101 @@ These entities let you test the system without waiting for a real outage:
 | `number.reef_battery_wifi_cut_min` | Cuts the Pi's Wi-Fi for N minutes (0 = none) to observe network failover. The link is always restored automatically. |
 
 These entities require `test_level` (and `test_hold_seconds`) configured in `config.json`.
+
+### Energy dashboard & Power Flow Card
+
+The three counters `energy_discharged`, `energy_charged` and `energy_consumed` are declared with `device_class: energy` and `state_class: total_increasing`: they are **directly eligible** in Home Assistant's Energy dashboard (*Settings → Dashboards → Energy*):
+
+- **Battery storage** → add the pair `energy_charged` (in) / `energy_discharged` (out).
+- **Individual device consumption** → add `energy_consumed` to track daily / weekly / monthly system load.
+
+Counters are persisted to disk every 60 s, so a reboot does not reset the totals.
+
+#### Power Flow Card Plus
+
+For a real-time visualisation of the energy flow (mains ↔ battery ↔ aquarium), the community card [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) does the job nicely:
+
+![Power Flow Card](images/power-flow-card.png)
+
+The card expects an instantaneous power value at each node, but the service only exposes a signed *battery power* and charger telemetry. Two template sensors fill in the "mains" and "load" nodes:
+
+```yaml
+# configuration.yaml — adjust prefix to match your mqtt.device_name
+template:
+  - sensor:
+      # Mains power: charger output (V × A) on mains, 0 otherwise
+      - name: "Reef Backup Grid Power"
+        unique_id: reef_backup_grid_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% if states('sensor.reef_battery_power_state') == 'on_mains' %}
+            {% set cv = states('sensor.reef_battery_charger_voltage') | float(0) %}
+            {% set cc = states('sensor.reef_battery_charger_current') | float(0) %}
+            {{ (cv * cc) | round(1) }}
+          {% else %}
+            0
+          {% endif %}
+
+      # Load power (actual aquarium consumption):
+      #   - on battery: battery power (positive = discharging)
+      #   - on mains:   charger output + signed battery power (negative
+      #                 while charging, hence subtracted)
+      - name: "Reef Backup Load Power"
+        unique_id: reef_backup_load_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set bp = states('sensor.reef_battery_power') | float(0) %}
+          {% if states('sensor.reef_battery_power_state') == 'on_battery' %}
+            {{ [bp, 0] | max | round(1) }}
+          {% else %}
+            {% set cv = states('sensor.reef_battery_charger_voltage') | float(0) %}
+            {% set cc = states('sensor.reef_battery_charger_current') | float(0) %}
+            {{ [(cv * cc) + bp, 0] | max | round(1) }}
+          {% endif %}
+```
+
+Card configuration:
+
+```yaml
+type: custom:power-flow-card-plus
+title: Reef Battery Backup
+entities:
+  battery:
+    entity: sensor.reef_battery_power
+    state_of_charge: sensor.reef_battery_soc
+    name: LiFePO4 Battery
+    icon: mdi:battery
+    # Internal convention: power > 0 = discharge. The card expects the
+    # opposite (power > 0 = charge), hence invert_state.
+    invert_state: true
+    display_state: two_way
+    show_state_of_charge: true
+  home:
+    entity: sensor.reef_backup_load_power
+    name: Aquarium
+    icon: mdi:fishbowl-outline
+  grid:
+    entity: sensor.reef_backup_grid_power
+    name: Mains
+    icon: mdi:transmission-tower
+  individual:
+    - entity: sensor.reef_battery_pump_intensity
+      name: Pumps
+      icon: mdi:pump
+      color: "#03a9f4"
+      unit_of_measurement: "%"
+clickable_entities: true
+use_new_flow_rate_model: true
+w_decimals: 0
+kw_decimals: 2
+watt_threshold: 1000
+```
+
+> **Note** — adapt the `reef_battery_*` prefix to your `mqtt.device_name` (e.g. `reef_battery_backup_*`). If Victron BLE is not installed, the `grid` node stays empty in the absence of mains measurement — the card still works with just `battery` + `home`.
 
 ### MQTT buffer
 
