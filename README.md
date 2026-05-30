@@ -618,85 +618,183 @@ For a real-time visualisation of the energy flow (mains ↔ battery ↔ aquarium
 
 ![Power Flow Card](images/power-flow-card.png)
 
-The card expects an instantaneous power value at each node, but the service only exposes a signed *battery power* and charger telemetry. Two template sensors fill in the "mains" and "load" nodes:
+This setup requires **two community cards** installed via HACS → Frontend:
+
+1. [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) — the flow card itself.
+2. [`config-template-card`](https://github.com/iantrich/config-template-card) — a wrapper that injects dynamic values (icons here) into the child card's config. Required because `power-flow-card-plus` only supports a static icon per `individual` node ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)).
+
+Both RSWave first get aggregated (forward + reverse) via two template sensors, and the two RSRun are wrapped as `sensor` so they show with a clean `%` unit:
 
 ```yaml
 # configuration.yaml — adjust prefix to match your mqtt.device_name
+# and the RSWave / RSRun IDs.
 template:
   - sensor:
-      # Mains power: charger output (V × A) on mains, 0 otherwise
-      - name: "Reef Backup Grid Power"
-        unique_id: reef_backup_grid_power
-        unit_of_measurement: "W"
-        device_class: power
-        state_class: measurement
+      # RSWave Gyre 1 — fold the two directional intensities into one
+      # active-speed value (state = max) and expose the direction as
+      # an attribute (shown in the card's secondary_info).
+      - name: "RSWave Gyre 1 Speed"
+        unique_id: rswave_gyre1_speed
+        unit_of_measurement: "%"
         state: >
-          {% if states('sensor.reef_battery_power_state') == 'on_mains' %}
-            {% set cv = states('sensor.reef_battery_charger_voltage') | float(0) %}
-            {% set cc = states('sensor.reef_battery_charger_current') | float(0) %}
-            {{ (cv * cc) | round(1) }}
-          {% else %}
-            0
-          {% endif %}
+          {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
 
-      # Load power (actual aquarium consumption):
-      #   - on battery: battery power (positive = discharging)
-      #   - on mains:   charger output + signed battery power (negative
-      #                 while charging, hence subtracted)
-      - name: "Reef Backup Load Power"
-        unique_id: reef_backup_load_power
-        unit_of_measurement: "W"
-        device_class: power
-        state_class: measurement
+      - name: "RSWave Gyre 2 Speed"
+        unique_id: rswave_gyre2_speed
+        unit_of_measurement: "%"
         state: >
-          {% set bp = states('sensor.reef_battery_power') | float(0) %}
-          {% if states('sensor.reef_battery_power_state') == 'on_battery' %}
-            {{ [bp, 0] | max | round(1) }}
-          {% else %}
-            {% set cv = states('sensor.reef_battery_charger_voltage') | float(0) %}
-            {% set cc = states('sensor.reef_battery_charger_current') | float(0) %}
-            {{ [(cv * cc) + bp, 0] | max | round(1) }}
-          {% endif %}
+          {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
+
+      # RSRun — wrap the `number` entities as `sensor`s to get clean
+      # entity_ids in the card. No icon defined here: it will be
+      # injected dynamically at card level by config-template-card.
+      - name: "Return Pump Speed"
+        unique_id: rsrun_return_speed
+        unit_of_measurement: "%"
+        state: "{{ states('number.rsrun_<your_pump_id>_pump_1_vitesse') }}"
+
+      - name: "Skimmer Speed"
+        unique_id: rsrun_skimmer_speed
+        unit_of_measurement: "%"
+        state: "{{ states('number.rsrun_<your_pump_id>_pump_2_vitesse') }}"
 ```
 
-Card configuration:
+Full card config, with dynamic `redsea:*` icons driven by `config-template-card`:
 
 ```yaml
-type: custom:power-flow-card-plus
-title: Reef Battery Backup
+type: custom:config-template-card
+variables:
+  GYRE1_ICON: |
+    (() => {
+      const v = Math.max(
+        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_avant'].state) || 0,
+        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_arriere'].state) || 0
+      );
+      if (v <= 0) return 'redsea:gyre-off';
+      if (v < 35) return 'redsea:gyre-min';
+      if (v < 70) return 'redsea:gyre-med';
+      return 'redsea:gyre-max';
+    })()
+  GYRE2_ICON: |
+    (() => {
+      const v = Math.max(
+        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_avant'].state) || 0,
+        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_arriere'].state) || 0
+      );
+      if (v <= 0) return 'redsea:gyre-off';
+      if (v < 35) return 'redsea:gyre-min';
+      if (v < 70) return 'redsea:gyre-med';
+      return 'redsea:gyre-max';
+    })()
+  PUMP_ICON: |
+    parseFloat(states['number.rsrun_<your_pump_id>_pump_1_vitesse'].state) > 0
+      ? 'redsea:pump-on' : 'redsea:pump-off'
+  SKIMMER_ICON: |
+    parseFloat(states['number.rsrun_<your_pump_id>_pump_2_vitesse'].state) > 0
+      ? 'redsea:skimmer-on' : 'redsea:skimmer-off'
+# Entities to subscribe to: config-template-card re-evaluates the
+# ${...} variables whenever one of them changes state, keeping
+# rendering efficient even with several variables.
 entities:
-  battery:
-    entity: sensor.reef_battery_power
-    state_of_charge: sensor.reef_battery_soc
-    name: LiFePO4 Battery
-    icon: mdi:battery
-    # Internal convention: power > 0 = discharge. The card expects the
-    # opposite (power > 0 = charge), hence invert_state.
-    invert_state: true
-    display_state: two_way
-    show_state_of_charge: true
-  home:
-    entity: sensor.reef_backup_load_power
-    name: Aquarium
-    icon: mdi:fishbowl-outline
-  grid:
-    entity: sensor.reef_backup_grid_power
-    name: Mains
-    icon: mdi:transmission-tower
-  individual:
-    - entity: sensor.reef_battery_pump_intensity
-      name: Pumps
-      icon: mdi:pump
-      color: "#03a9f4"
-      unit_of_measurement: "%"
-clickable_entities: true
-use_new_flow_rate_model: true
-w_decimals: 0
-kw_decimals: 2
-watt_threshold: 1000
+  - sensor.rswave45_<your_wave1_id>_intensite_marche_avant
+  - sensor.rswave45_<your_wave1_id>_intensite_marche_arriere
+  - sensor.rswave45_<your_wave2_id>_intensite_marche_avant
+  - sensor.rswave45_<your_wave2_id>_intensite_marche_arriere
+  - number.rsrun_<your_pump_id>_pump_1_vitesse
+  - number.rsrun_<your_pump_id>_pump_2_vitesse
+card:
+  type: custom:power-flow-card-plus
+  title: Reef Battery Backup
+  entities:
+    battery:
+      entity: sensor.reef_battery_backup_puissance
+      state_of_charge: sensor.reef_battery_backup_soc_batterie
+      name: Batterie LiFePO4
+      icon: mdi:battery
+      # Internal convention: power > 0 = discharge. The card expects
+      # the opposite (power > 0 = charge), hence invert_state.
+      invert_state: true
+      color:
+        consumption: "#4caf50"
+        production: "#ff9800"
+      display_state: two_way
+      show_state_of_charge: true
+      state_of_charge_unit: "%"
+      state_of_charge_decimals: 0
+    home:
+      entity: sensor.reef_battery_backup_energie_consommee
+      name: Aquarium
+      icon: mdi:fishbowl-outline
+      color_value: true
+    grid:
+      entity: sensor.reef_battery_backup_tension_chargeur
+      name: Mains
+      icon: mdi:transmission-tower
+      color_value: true
+    individual:
+      - entity: sensor.rswave_gyre_1_speed
+        name: Gyre 1
+        color: "#00bcd4"
+        icon: ${GYRE1_ICON}
+        unit_of_measurement: "%"
+        display_zero: true
+        secondary_info:
+          template: |
+            {{ state_attr('sensor.rswave_gyre_1_speed', 'direction') }}
+      - entity: sensor.rswave_gyre_2_speed
+        name: Gyre 2
+        icon: ${GYRE2_ICON}
+        color: "#00bcd4"
+        unit_of_measurement: "%"
+        display_zero: true
+        secondary_info:
+          template: |
+            {{ state_attr('sensor.rswave_gyre_2_speed', 'direction') }}
+      - entity: sensor.return_pump_speed
+        name: Return pump
+        icon: ${PUMP_ICON}
+        color: "#2196f3"
+        unit_of_measurement: "%"
+        display_zero: true
+      - entity: sensor.skimmer_speed
+        name: Skimmer
+        icon: ${SKIMMER_ICON}
+        color: "#ff2030"
+        unit_of_measurement: "%"
+        display_zero: true
+  clickable_entities: true
+  display_zero_lines:
+    mode: show
+    transparency: 50
+  use_new_flow_rate_model: true
+  min_flow_rate: 0.75
+  max_flow_rate: 6
+  transparency_zero_lines: 0
+  kilo_threshold: 1000
+  base_decimals: 0
+  kilo_decimals: 2
 ```
 
-> **Note** — adapt the `reef_battery_*` prefix to your `mqtt.device_name` (e.g. `reef_battery_backup_*`). If Victron BLE is not installed, the `grid` node stays empty in the absence of mains measurement — the card still works with just `battery` + `home`.
+Adjust the 35 % / 70 % thresholds for the `gyre-min` / `gyre-med` / `gyre-max` transitions to match your typical operating range.
+
+> **Notes**
+> - Adapt the `reef_battery_backup_*` prefix to your `mqtt.device_name`, and the RSWave (`rswave45_XXXXXXX`) and RSRun (`rsrun_XXXXXXXXXX`) IDs.
+> - The `redsea:*` icons (gyre, pump, skimmer) come from the iconset installed automatically by the [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) integration.
+> - The `grid` node uses `tension_chargeur` (V) here as a mains-presence indicator — this is intentional, we visualise *whether* mains is present, not how many watts it provides. For a proper energy-flow diagram in watts, you can create template sensors `Reef Backup Grid Power` (= charger V × A) and `Reef Backup Load Power` (= charger output − signed battery power) and use those instead.
 
 ### MQTT buffer
 
