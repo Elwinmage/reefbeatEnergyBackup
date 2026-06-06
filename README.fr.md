@@ -64,7 +64,7 @@ Le système se construit en trois niveaux, chacun ajoutant des fonctionnalités.
 
 
 <p align="center">
-  <img src="docs/images/level1.png" alt="level1" width="400">
+  <img src="docs/images/level1.png" alt="level1">
 </p>
 
 
@@ -190,7 +190,7 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 ### Niveau 2 — Montage normal *(recommandé)*
 
 <p align="center">
-  <img src="docs/images/level2.png" alt="level2" width="400">
+  <img src="docs/images/level2.png" alt="level2" width>
 </p>
 
 > **Objectif** : ajouter le monitoring batterie temps réel, la détection automatique de coupure, et la dégradation progressive des pompes selon le SoC. C'est le niveau **recommandé** pour une installation pérenne.
@@ -302,7 +302,7 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 ### Niveau 3 — Montage avancé
 
 <p align="center">
-  <img src="docs/images/level3.png" alt="level3" width="400">
+  <img src="docs/images/level3.png" alt="level3" width>
 </p>
 
 > **Objectif** : ajouter le contrôle à distance du chargeur, un disjoncteur connecté pour pouvoir déclencher des **tests de décharge programmés** depuis Home Assistant, et un modem 4G pour les notifications même quand tout le réseau est coupé.
