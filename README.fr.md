@@ -159,7 +159,13 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 
 > 🔧 **Problème sonde de godet du DC Skimmer** : alimenté par la batterie LiFePO₄ (26-27V au lieu du 24V d'origine), la **sonde de godet plein de l'écumeur devient peu fiable** — elle déclenche de fausses alarmes « godet plein » même après recalibration. C'est une limitation matérielle de la sonde à tension plus élevée.
 >
-> **Solution recommandée** : ajouter un [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) entre le bus batterie et le skimmer uniquement, réglé à 24,0V en sortie. Câblez-le sur le connecteur IP68 du skimmer (broches 1+3 uniquement). Refaites ensuite une calibration de la sonde via l'app ReefBeat. Les ReefWave et ReefRun restent branchés directement sur la batterie — ils fonctionnent très bien à 26-27V.
+> **Solution recommandée** : ajouter un [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) entre le bus batterie et le skimmer uniquement, réglé à 24,0V en sortie.
+>
+> <p align="center">
+>   <img src="docs/images/lm2596.png" alt="LM2596 DC-DC buck converter" width="200">
+> </p>
+>
+> Câblez-le sur le connecteur IP68 du skimmer (broches 1+3 uniquement). Refaites ensuite une calibration de la sonde via l'app ReefBeat. Les ReefWave et ReefRun restent branchés directement sur la batterie — ils fonctionnent très bien à 26-27V.
 
 #### ✅ Ce que vous obtenez
 
@@ -301,8 +307,8 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 |---|---|---|
 | ![Chargeur BLE](docs/images/chargeur.png) **Chargeur Victron Blue Smart IP22 24/12** *(remplace le chargeur Kepworth fourni — silencieux + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Disjoncteur](docs/images/disjoncteur.png) **Disjoncteur connecté Wi-Fi 16 A avec compteur** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
-| **SIM7600G-H 4G HAT** *(recommandé — intégré sur le Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
-| **Module DC-DC 24V→5V 5A** *(nécessaire si SIM7600 HAT — l'USB du RPi seul ne peut pas alimenter les deux)* | [DC-DC Buck 9-36V vers 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2,50 € |
+| ![SIM7600G-H](docs/images/sim7600g-h.png) **SIM7600G-H 4G HAT** *(recommandé — intégré sur le Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
+| ![DC-DC 5V](docs/images/dcdc-5v.png) **Module DC-DC 24V→5V 5A** *(nécessaire si SIM7600 HAT — l'USB du RPi seul ne peut pas alimenter les deux)* | [DC-DC Buck 9-36V vers 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2,50 € |
 
 *Ou en alternative au SIM7600 :*
 
@@ -372,6 +378,10 @@ Permet de remonter dans HA :
 Configuration : récupérer la **clé de chiffrement** depuis l'app VictronConnect (Settings → Product Info → Instant Readout → "Show"), à entrer dans le wizard de configuration.
 
 **SIM7600G-H 4G HAT** *(recommandé)* :
+
+<p align="center">
+  <img src="docs/images/sim7600g-h.png" alt="SIM7600G-H 4G HAT" width="300">
+</p>
 
 Le [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) se branche directement sur le connecteur GPIO du Raspberry Pi. LTE Cat4 150 Mbps, bandes mondiales, avec positionnement GNSS.
 

@@ -191,7 +191,13 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 
 > 🔧 **DC Skimmer cup full sensor issue**: when powered by the LiFePO₄ battery (26-27V instead of the original 24V), the skimmer's **cup full sensor becomes unreliable** — it triggers false "cup full" alarms even after recalibration. This is a hardware limitation of the probe at higher voltage.
 >
-> **Recommended fix**: add a [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) between the battery bus and the skimmer only, adjusted to 24.0V output. Wire it to the skimmer's IP68 connector (pins 1+3 only). Then recalibrate the cup sensor via the ReefBeat app. The ReefWave and ReefRun stay connected directly to the battery — they work fine at 26-27V.
+> **Recommended fix**: add a [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) between the battery bus and the skimmer only, adjusted to 24.0V output.
+>
+> <p align="center">
+>   <img src="docs/images/lm2596.png" alt="LM2596 DC-DC buck converter" width="200">
+> </p>
+>
+> Wire it to the skimmer's IP68 connector (pins 1+3 only). Then recalibrate the cup sensor via the ReefBeat app. The ReefWave and ReefRun stay connected directly to the battery — they work fine at 26-27V.
 
 #### ✅ What you get
 
@@ -333,8 +339,8 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 |---|---|---|
 | ![Charger BLE](docs/images/chargeur.png) **Victron Blue Smart IP22 24/12** *(replaces Kepworth charger — silent + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Circuit breaker](docs/images/disjoncteur.png) **Connected Wi-Fi circuit breaker 16A with meter** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
-| **SIM7600G-H 4G HAT** *(recommended — integrated on the Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
-| **DC-DC 24V→5V 5A module** *(required if using SIM7600 HAT — the RPi USB alone can't power both)* | [DC-DC Buck 9-36V to 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2.50 € |
+| ![SIM7600G-H](docs/images/sim7600g-h.png) **SIM7600G-H 4G HAT** *(recommended — integrated on the Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
+| ![DC-DC 5V](docs/images/dcdc-5v.png) **DC-DC 24V→5V 5A module** *(required if using SIM7600 HAT — the RPi USB alone can't power both)* | [DC-DC Buck 9-36V to 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2.50 € |
 
 *Or alternatively to the SIM7600:*
 
@@ -404,6 +410,10 @@ Publishes to HA:
 Configuration: retrieve the **encryption key** from the VictronConnect app (Settings → Product Info → Instant Readout → "Show"), enter it in the configuration wizard.
 
 **SIM7600G-H 4G HAT** *(recommended)*:
+
+<p align="center">
+  <img src="docs/images/sim7600g-h.png" alt="SIM7600G-H 4G HAT" width="300">
+</p>
 
 The [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) plugs directly onto the Raspberry Pi's GPIO header. LTE Cat4 150 Mbps, global bands, with GNSS positioning.
 
