@@ -94,6 +94,11 @@ The system is built in three levels, each adding functionality. You can start at
 
 ### Level 1 — Basic setup
 
+<p align="center">
+  <img src="docs/images/level1.png" alt="level1" width="400">
+</p>
+
+
 > **Goal**: provide battery backup for pumps during power outages, without monitoring or automation.
 
 #### 📦 Hardware
@@ -215,6 +220,11 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 
 ### Level 2 — Normal setup *(recommended)*
 
+
+<p align="center">
+  <img src="docs/images/level2.png" alt="level2" width="400">
+</p>
+
 > **Goal**: add real-time battery monitoring, automatic outage detection, and progressive pump degradation based on SoC. This is the **recommended** level for a permanent installation.
 
 #### 📦 Additional hardware (on top of level 1)
@@ -322,6 +332,11 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 ---
 
 ### Level 3 — Advanced setup
+
+
+<p align="center">
+  <img src="docs/images/level3.png" alt="level3" width="400">
+</p>
 
 > **Goal**: add remote charger monitoring, a connected circuit breaker for **scheduled discharge tests**, and 4G LTE backup for notifications when all networks are down.
 >
