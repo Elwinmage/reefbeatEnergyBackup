@@ -14,7 +14,6 @@ import json
 import signal
 import sys
 import time
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +26,7 @@ from controller import PumpController, OutageManager
 from mqtt_buffer import MqttBuffer
 from notifier import create_notifier
 from updater import create_updater
-from energy import EnergyAccumulator
+from lte_monitor import create_lte_monitor
 
 
 # =============================================================================
@@ -61,36 +60,12 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
     # we re-establish quickly when the broker (or its host) comes back.
     client.reconnect_delay_set(min_delay=1, max_delay=60)
 
-    # Command routing: topics the service subscribes to (HA -> service),
-    # filled in after the pump controller exists via wire_test_commands().
-    # Stored on the client's user_data so the (re)connect callback can
-    # re-subscribe on every reconnection.
-    command_handlers: dict = {}
-    client.user_data_set({"command_handlers": command_handlers})
-
     def _on_connect(c, userdata, flags, rc, props=None):
         if rc == 0:
             print(f"[MQTT] Connected to {host}:{port}")
             buffer.notify_connected()
-            # (Re)subscribe to all registered command topics.
-            handlers = (userdata or {}).get("command_handlers", {})
-            for topic in handlers:
-                c.subscribe(topic)
-            if handlers:
-                print(f"[MQTT] Subscribed to {len(handlers)} command topic(s)")
         else:
             print(f"[MQTT] Connection refused (rc={rc})")
-
-    def _on_message(c, userdata, msg):
-        handlers = (userdata or {}).get("command_handlers", {})
-        handler = handlers.get(msg.topic)
-        if handler is None:
-            return
-        try:
-            payload = msg.payload.decode("utf-8", errors="replace").strip()
-            handler(payload)
-        except Exception as e:  # noqa: BLE001 — never let a bad msg crash us
-            print(f"[MQTT] command handler error on {msg.topic}: {e}")
 
     def _on_disconnect(c, userdata, *args, **kwargs):
         # paho calls this on graceful disconnect AND on broker drop.
@@ -99,7 +74,6 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
 
     client.on_connect = _on_connect
     client.on_disconnect = _on_disconnect
-    client.on_message = _on_message
 
     # connect_async: returns immediately even if the broker is down.
     # The actual connection attempt happens inside loop_start()'s thread
@@ -188,171 +162,7 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         # cadence on slow SD cards.
         time.sleep(0.05)
 
-    # --- Cumulative energy counters (Energy dashboard) -------------------
-    # These need state_class=total_increasing + device_class=energy + unit
-    # kWh to be eligible in the HA Energy dashboard. They feed the
-    # "Home battery storage" section (charged/discharged) and the
-    # "Individual devices" section (consumed).
-    energy_sensors = [
-        ("Énergie déchargée", "energy_discharged",
-         "{{ value_json.energy_discharged_kwh }}",
-         "mdi:battery-arrow-down-outline"),
-        ("Énergie chargée",   "energy_charged",
-         "{{ value_json.energy_charged_kwh }}",
-         "mdi:battery-arrow-up-outline"),
-        ("Énergie consommée", "energy_consumed",
-         "{{ value_json.energy_consumed_kwh }}",
-         "mdi:lightning-bolt"),
-    ]
-    for name, uid, tpl, icon in energy_sensors:
-        uid_full = f"{device_name}_{uid}"
-        payload = {
-            "name": name,
-            "unique_id": uid_full,
-            "state_topic": f"{base}/sensor/{device_name}/state",
-            "value_template": tpl,
-            "unit_of_measurement": "kWh",
-            "device_class": "energy",
-            "state_class": "total_increasing",
-            "icon": icon,
-            "device": device_info,
-        }
-        buffer.publish(
-            f"{base}/sensor/{uid_full}/config",
-            json.dumps(payload), retain=True,
-        )
-        time.sleep(0.05)
-
-    print(f"[MQTT] Queued {len(sensors)} HA discovery configs "
-          f"+ {len(energy_sensors)} energy counters")
-
-
-def wire_test_commands(client, buffer: "MqttBuffer", cfg: dict,
-                       pump, network) -> None:
-    """
-    Register MQTT command handlers + publish HA control entities used by
-    the test blueprint:
-
-      * a switch to toggle the TEST autonomy plan (tight thresholds so a
-        real discharge crosses normal/eco/survival within minutes), and
-      * a number to cut Wi-Fi for N minutes (0 = no cut) to observe the
-        network failover.
-
-    Safe no-op if MQTT is unavailable. Defaults keep a normal run
-    unaffected (test plan off, Wi-Fi cut 0).
-    """
-    if client is None:
-        return
-
-    mqtt_cfg = cfg.get("mqtt", {})
-    device_name = mqtt_cfg.get("device_name", "reef_battery")
-    base = mqtt_cfg.get("base_topic", "homeassistant")
-    device_info = {"identifiers": [device_name], "name": "Reef Battery Backup"}
-
-    # paho stores user_data internally; fetch via the documented accessor.
-    ud = client.user_data_get() or {}
-    handlers = ud.get("command_handlers", {})
-
-    # --- Switch: TEST autonomy plan -------------------------------------
-    sw_uid = f"{device_name}_test_plan"
-    sw_cmd = f"{base}/switch/{device_name}/test_plan/set"
-    sw_state = f"{base}/switch/{device_name}/test_plan/state"
-
-    def _on_test_plan(payload: str):
-        enabled = payload.strip().upper() in ("ON", "1", "TRUE")
-        pump.set_test_plan(enabled)
-        buffer.publish(sw_state, "ON" if pump.test_plan_active else "OFF",
-                       retain=True)
-
-    handlers[sw_cmd] = _on_test_plan
-    if client.is_connected():
-        client.subscribe(sw_cmd)
-    buffer.publish(f"{base}/switch/{sw_uid}/config", json.dumps({
-        "name": "Test commandes pompes",
-        "unique_id": sw_uid,
-        "command_topic": sw_cmd,
-        "state_topic": sw_state,
-        "icon": "mdi:test-tube",
-        "device": device_info,
-    }), retain=True)
-    buffer.publish(sw_state, "ON" if pump.test_plan_active else "OFF",
-                   retain=True)
-
-    # --- Number: timed Wi-Fi cut ----------------------------------------
-    num_uid = f"{device_name}_wifi_cut_min"
-    num_cmd = f"{base}/number/{device_name}/wifi_cut/set"
-    num_state = f"{base}/number/{device_name}/wifi_cut/state"
-
-    def _on_wifi_cut(payload: str):
-        try:
-            minutes = float(payload)
-        except ValueError:
-            return
-        # Echo the requested value, then reset to 0 once the cut starts so
-        # the HA control returns to idle.
-        buffer.publish(num_state, str(minutes), retain=True)
-        if minutes > 0:
-            network.cut_wifi_for(minutes)
-        buffer.publish(num_state, "0", retain=True)
-
-    handlers[num_cmd] = _on_wifi_cut
-    if client.is_connected():
-        client.subscribe(num_cmd)
-    buffer.publish(f"{base}/number/{num_uid}/config", json.dumps({
-        "name": "Coupure Wi-Fi (test, min)",
-        "unique_id": num_uid,
-        "command_topic": num_cmd,
-        "state_topic": num_state,
-        "min": 0,
-        "max": 60,
-        "step": 1,
-        "mode": "box",
-        "unit_of_measurement": "min",
-        "icon": "mdi:wifi-off",
-        "device": device_info,
-    }), retain=True)
-    buffer.publish(num_state, "0", retain=True)
-
-    # --- Button: run the pump command test on demand ---------------------
-    # One-tap functional check: apply the test level, hold for a configured
-    # number of seconds, then restore. Runs entirely service-side in a
-    # background thread so the restore is guaranteed even if HA disconnects
-    # mid-test. Independent of the monthly discharge blueprint.
-    btn_uid = f"{device_name}_test_pumps"
-    btn_cmd = f"{base}/button/{device_name}/test_pumps/press"
-    hold_s = float(cfg.get("pump_control", {})
-                   .get("test_hold_seconds", 15.0))
-
-    def _on_test_pumps(_payload: str):
-        if not pump._resolver.has_test_level:
-            print("[TEST] Button pressed but no 'test_level' configured")
-            return
-
-        def _worker():
-            print(f"[TEST] On-demand pump test: apply test level, "
-                  f"hold {hold_s:.0f}s, then restore")
-            try:
-                pump.set_test_plan(True)
-                time.sleep(hold_s)
-            finally:
-                # Always restore, even if something throws during the hold.
-                pump.set_test_plan(False)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    handlers[btn_cmd] = _on_test_pumps
-    if client.is_connected():
-        client.subscribe(btn_cmd)
-    buffer.publish(f"{base}/button/{btn_uid}/config", json.dumps({
-        "name": "Tester les commandes pompes",
-        "unique_id": btn_uid,
-        "command_topic": btn_cmd,
-        "icon": "mdi:pump",
-        "device": device_info,
-    }), retain=True)
-
-    print("[MQTT] Test control entities published "
-          "(test switch + Wi-Fi cut + pump-test button)")
+    print(f"[MQTT] Queued {len(sensors)} HA discovery configs")
 
 
 # =============================================================================
@@ -368,68 +178,6 @@ def _signal_handler(sig, frame):
     _running = False
 
 
-def _migrate_config(cfg: dict) -> None:
-    """
-    Upgrade an existing config.json in-memory to keep newer features working
-    even if the user's file predates them. Only fills in missing keys or
-    widens values that are now known to be too small; never overwrites a
-    deliberate larger/custom value. Logs what it changes.
-
-    Rationale: several hotspot fixes depend on config values that old files
-    don't have (or have set too low):
-      - hotspot DHCP range must cover the per-device reservations, which use
-        the LAN last octet (e.g. .83, .122, .176). A range of .10-.50 leaves
-        those reservations out of range.
-      - failover must wait long enough for a slow device (RSRUN) whose Wi-Fi
-        watchdog can take ~15 min to rejoin the hotspot.
-      - the hotspot health-check cadence must be tight to catch late joiners.
-    """
-    changes = []
-    net = cfg.setdefault("network", {})
-    hs = net.setdefault("hotspot", {})
-    fo = net.setdefault("failover", {})
-    mt = cfg.setdefault("maintenance", {})
-
-    # Widen the hotspot DHCP range so per-device reservations (which reuse
-    # the LAN last octet, up to .254) are inside it.
-    def _last_octet(ip, default):
-        try:
-            return int(str(ip).split(".")[-1])
-        except (ValueError, AttributeError):
-            return default
-
-    if _last_octet(hs.get("dhcp_end"), 0) < 250:
-        old = hs.get("dhcp_end")
-        prefix = ".".join(str(hs.get("ip", "192.168.4.1")).split(".")[:3])
-        hs["dhcp_end"] = f"{prefix}.250"
-        changes.append(f"hotspot.dhcp_end {old} -> {hs['dhcp_end']}")
-    # Start low enough too.
-    if _last_octet(hs.get("dhcp_start"), 999) > 10:
-        old = hs.get("dhcp_start")
-        prefix = ".".join(str(hs.get("ip", "192.168.4.1")).split(".")[:3])
-        hs["dhcp_start"] = f"{prefix}.10"
-        changes.append(f"hotspot.dhcp_start {old} -> {hs['dhcp_start']}")
-
-    # Give slow devices time to rejoin the hotspot (their Wi-Fi watchdog can
-    # be ~15 min). Only raise it if it's below that.
-    if float(fo.get("controller_reconnect_timeout_s", 0) or 0) < 900:
-        old = fo.get("controller_reconnect_timeout_s")
-        fo["controller_reconnect_timeout_s"] = 900.0
-        changes.append(
-            f"failover.controller_reconnect_timeout_s {old} -> 900.0")
-
-    # Tight hotspot health-check cadence to catch late joiners.
-    if "health_interval_hotspot_s" not in mt:
-        mt["health_interval_hotspot_s"] = 60.0
-        changes.append("maintenance.health_interval_hotspot_s -> 60.0 (added)")
-
-    if changes:
-        print("[CONFIG] Auto-migrated settings (edit config.json to make "
-              "permanent):")
-        for c in changes:
-            print(f"  • {c}")
-
-
 def load_config(path: str) -> dict:
     """Load and validate config from JSON file."""
     p = Path(path)
@@ -440,8 +188,6 @@ def load_config(path: str) -> dict:
 
     with open(p) as f:
         cfg = json.load(f)
-
-    _migrate_config(cfg)
 
     monitoring = cfg.get("monitoring", {})
     detection = cfg.get("outage_detection", {})
@@ -489,7 +235,7 @@ def main():
     # gets a continuous timeline even if it died for hours during the
     # very outage we're trying to ride out.
     buffer_dir = Path(cfg.get("mqtt", {}).get(
-        "buffer_dir", "/var/lib/reef-battery-monitor/mqtt"
+        "buffer_dir", "/var/lib/reefbeat-energy-backup/mqtt"
     ))
     retention_days = cfg.get("mqtt", {}).get("buffer_retention_days", 7)
     mqtt_buffer = MqttBuffer(buffer_dir, retention_days=retention_days)
@@ -512,31 +258,14 @@ def main():
     # --- Outage manager ---
     outage_mgr = OutageManager(pump, network, cfg, notifier=notifier)
 
-    # --- Test control entities (test autonomy plan + timed Wi-Fi cut) ---
-    # Lets the test blueprint exercise level changes and network failover
-    # without waiting hours for a real discharge. No-op without MQTT.
-    if mqtt_client:
-        wire_test_commands(mqtt_client, mqtt_buffer, cfg, pump, network)
-
     # --- Updater (background GitHub version check + HA update entity) ---
     install_dir = str(Path(__file__).parent)
     updater = create_updater(cfg, mqtt_client, install_dir)
     updater.start()
 
-    # --- Energy accumulator (cumulative kWh for the HA Energy dashboard) ---
-    # State path lives alongside pump snapshots so a single bind-mount or
-    # backup covers everything mutable. Save cadence is conservative (60s
-    # default) to limit SD-card wear while bounding worst-case data loss
-    # on unclean shutdown.
-    snap_base = cfg.get("pump_control", {}).get("snapshot_dir") \
-        or "/var/lib/reefbeat-energy-backup"
-    energy_state_path = Path(snap_base) / "energy_state.json"
-    energy_save_interval = float(
-        cfg.get("energy_meter", {}).get("save_interval_s", 60.0))
-    energy_meter = EnergyAccumulator(
-        state_path=energy_state_path,
-        save_interval_s=energy_save_interval,
-    )
+    # --- LTE Monitor (4G modem status + MQTT sensors) ---
+    lte_monitor = create_lte_monitor(cfg, mqtt_client)
+    lte_monitor.start()
 
     # --- Outage detector ---
     detector = create_outage_detector(cfg)
@@ -583,38 +312,6 @@ def main():
         _mains_runtime_h: Optional[float] = None
         _prev_on_mains: bool = True
 
-        # --- Periodic maintenance timers (health check + reference snapshot) ---
-        # Health check: probe all devices and log who's reachable + net mode.
-        # Reference snapshot: capture nominal pump config as a safety net.
-        # Both use monotonic deadlines so a slow loop iteration can't drift them.
-        maint_cfg = cfg.get("maintenance", {})
-        health_interval_mains = float(
-            maint_cfg.get("health_interval_s", 300.0))        # 5 min on mains
-        health_interval_batt = float(
-            maint_cfg.get("health_interval_battery_s", 900.0))  # 15 min on battery
-        health_interval_hotspot = float(
-            maint_cfg.get("health_interval_hotspot_s", 60.0))   # 1 min on hotspot
-        reference_interval = float(
-            maint_cfg.get("reference_snapshot_interval_s", 3600.0))  # hourly
-        _next_health = 0.0      # 0 → run on first iteration
-        _next_reference = time.monotonic() + reference_interval
-
-        # --- Periodic connectivity checks (LTE link + normal internet) ---
-        # Both are deadline-based and configured in hours via the notifier
-        # config. An interval of 0 disables that check. We schedule the
-        # first run one full interval out (not immediately) to avoid a burst
-        # of network probes during startup.
-        _lte_check_h = notifier.lte_check_interval_h()
-        _inet_check_h = notifier.internet_check_interval_h()
-        _next_lte_check = (time.monotonic() + _lte_check_h * 3600.0
-                           if _lte_check_h > 0 else None)
-        _next_inet_check = (time.monotonic() + _inet_check_h * 3600.0
-                            if _inet_check_h > 0 else None)
-        if _lte_check_h > 0:
-            print(f"[CONN] LTE health check every {_lte_check_h:g}h")
-        if _inet_check_h > 0:
-            print(f"[CONN] Internet check every {_inet_check_h:g}h")
-
         while _running:
             # Read battery (INA226 is fast and reliable)
             on_mains = outage_mgr.power_state == PowerState.MAINS
@@ -629,15 +326,7 @@ def main():
             # Refresh charger telemetry once every N cycles. Between polls
             # we re-inject the previous reading so the user sees a stable
             # value rather than alternating "with/without" data.
-            #
-            # IMPORTANT: only poll the Victron over BLE when on mains. During
-            # an outage the charger is unpowered and unreachable, so the BLE
-            # scan would block for its full timeout every N cycles. That
-            # stalls the main loop and distorts the coulomb-counter timing
-            # (it used to make the SoC jump). We also drop the last known
-            # charger data so we don't keep logging a stale "charging" line
-            # (e.g. "+6.00A bulk") while mains is actually down.
-            if victron_aux is not None and on_mains:
+            if victron_aux is not None:
                 victron_tick += 1
                 if victron_tick >= victron_every_n:
                     victron_tick = 0
@@ -654,10 +343,6 @@ def main():
                     reading.charger_state = last_charger["state"]
                     reading.charger_error = last_charger["error"]
                     reading.charger_source = last_charger["source"]
-            elif victron_aux is not None and not on_mains:
-                # On battery: charger telemetry is meaningless/unreachable.
-                last_charger = None
-                victron_tick = 0
 
             # Feed monitor-based detector if used
             from outage import MonitorDetector
@@ -717,25 +402,6 @@ def main():
             outage_mgr.update_soc(reading.soc, runtime_h=runtime_h if runtime_h else -1.0)
             status = outage_mgr.get_status()
 
-            # --- Energy accumulator -------------------------------------
-            # Integrate one main-loop tick worth of energy. Charger power
-            # is derived from the (possibly cached) Victron telemetry when
-            # available; on battery it stays None which is fine — the
-            # accumulator falls back to battery_power for the load.
-            charger_power: Optional[float] = None
-            if (reading.charger_voltage is not None
-                    and reading.charger_current is not None):
-                charger_power = (reading.charger_voltage
-                                 * reading.charger_current)
-            try:
-                energy_meter.update(
-                    battery_power_w=reading.power,
-                    charger_power_w=charger_power,
-                    on_mains=on_mains,
-                )
-            except Exception as e:  # never let metering kill the loop
-                print(f"[ENERGY] update failed: {e}")
-
             # State payload
             data = {
                 "voltage": reading.voltage,
@@ -749,8 +415,6 @@ def main():
                 "network_mode": status["network_mode"],
                 "monitor_source": reading.source,
             }
-            # Cumulative energy counters (kWh) for the HA Energy dashboard.
-            data.update(energy_meter.snapshot())
             # Add charger fields only when present (avoids publishing
             # nulls to MQTT for users who haven't configured Victron).
             if reading.charger_source is not None:
@@ -801,80 +465,16 @@ def main():
                 line += f" {reading.charger_state}"
             print(line)
 
-            # --- Periodic maintenance (deadline-based) ---
-            mono = time.monotonic()
-
-            # Health check: probe devices and log reachability + net mode.
-            # Spaced out further while on battery to save energy.
-            if mono >= _next_health:
-                try:
-                    # While the hotspot is up, devices may have (re)joined
-                    # with new IPs since the failover ran; refresh the
-                    # mapping so the health check probes the right address.
-                    if network.mode.value == "hotspot":
-                        network.remap_controller_ips_from_leases(
-                            cfg.get("pump_control", {}).get("controllers", []))
-                    outage_mgr._pump.health_check(
-                        network_mode=status.get("network_mode", "?"),
-                        on_battery=not on_mains,
-                    )
-                except Exception as e:  # never let maintenance kill the loop
-                    print(f"[HEALTH] check failed: {e}")
-                # Pick the cadence: tight while on the hotspot (so a slow
-                # device like an RSRUN that only rejoins after its Wi-Fi
-                # watchdog fires gets remapped and detected quickly), normal
-                # on mains, relaxed on battery+client (save energy).
-                if network.mode.value == "hotspot":
-                    interval = health_interval_hotspot
-                elif on_mains:
-                    interval = health_interval_mains
-                else:
-                    interval = health_interval_batt
-                _next_health = mono + interval
-
-            # Reference snapshot: only on mains and in nominal mode, so we
-            # always keep a recent known-good config as a safety net.
-            if on_mains and mono >= _next_reference:
-                try:
-                    outage_mgr._pump.capture_reference_snapshots()
-                except Exception as e:
-                    print(f"[REFERENCE] capture failed: {e}")
-                _next_reference = mono + reference_interval
-
-            # LTE link health check: audit the backup path so we know it
-            # works *before* a real outage needs it. Notifies over the
-            # normal internet link if the LTE link is down.
-            if _next_lte_check is not None and mono >= _next_lte_check:
-                try:
-                    notifier.run_lte_check()
-                except Exception as e:  # never let a check kill the loop
-                    print(f"[CONN] LTE check failed: {e}")
-                _next_lte_check = mono + _lte_check_h * 3600.0
-
-            # Internet connectivity check: if the normal WAN is down, the
-            # alert is pushed out through the LTE modem instead.
-            if _next_inet_check is not None and mono >= _next_inet_check:
-                try:
-                    notifier.run_internet_check()
-                except Exception as e:
-                    print(f"[CONN] Internet check failed: {e}")
-                _next_inet_check = mono + _inet_check_h * 3600.0
-
             time.sleep(poll_interval)
 
     finally:
+        lte_monitor.stop()
         updater.stop()
         network.cleanup()
         detector.cleanup()
         monitor.close()
         if victron_aux:
             victron_aux.close()
-        # Persist energy counters so a graceful shutdown loses zero data
-        # (a crash loses at most ~save_interval_s seconds).
-        try:
-            energy_meter.flush()
-        except Exception as e:
-            print(f"[ENERGY] flush on shutdown failed: {e}")
         # Stop the buffer FIRST so the replay thread doesn't try to
         # publish through a client we're about to disconnect.
         mqtt_buffer.stop()

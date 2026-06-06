@@ -12,37 +12,17 @@ Autonomous backup battery monitoring and management system for Red Sea reef aqua
 - **Instant outage detection** via 230V relay on GPIO
 - **Progressive pump degradation** — SoC-based levels auto-computed from a target autonomy
 - **Per-device control** — each ReefWave / ReefRun / Skimmer gets its own intensity per level
-- **3-level network failover** — normal Wi-Fi → rejoin → autonomous hotspot with MAC whitelist, DHCP reservations and automatic pump IP remapping
-- **Robust recovery** — pump config snapshots (pre-outage + hourly reference), restore with retry and a manual CLI, periodic health-check
+- **3-level network failover** — normal Wi-Fi → rejoin → autonomous hotspot
 - **Push notifications** — via [ntfy.sh](https://ntfy.sh) (free, no account required) + 4G LTE failover
 - **4G internet gateway** — when hotspot is active, routes ReefBeat traffic through 4G so the Red Sea mobile app keeps working
-- **Home Assistant integration** — MQTT auto-discovery (sensors + charger if Victron + test entities)
+- **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
 - **MQTT buffer with replay** — data during HA outage is never lost
-- **Auto-detection** — scans your network for ReefBeat devices during setup, collects their MACs
-- **Built-in test** — test level to verify pump control (speed + on/off) and a timed Wi-Fi cut, without waiting for a real outage
+- **Auto-detection** — scans your network for ReefBeat devices during setup
 - **Self-update** — checks GitHub for new versions, HA update entity with "Install" button
 - **Scheduled reboot** — automatic RPi reboot via cron, skipped if on battery
 - **Bilingual** — FR/EN interface based on system locale
 
 ## 📋 Table of contents
-
-- [Quick install](#-quick-install)
-- [Service management](#-service-management)
-- [Hardware mounting levels](#-hardware-mounting-levels)
-  - [Level 1 — Basic setup](#level-1--basic-setup)
-  - [Level 2 — Normal setup (recommended)](#level-2--normal-setup-recommended)
-  - [Level 3 — Advanced setup](#level-3--advanced-setup)
-  - [Increasing autonomy](#increasing-autonomy)
-- [Configuration](#-configuration)
-- [Home Assistant](#-home-assistant)
-- [Network failover](#-network-failover--complete-flow)
-- [Reliability & recovery](#-reliability--recovery)
-- [Push notifications](#-push-notifications-ntfysh)
-- [Battery test blueprint](#-automatic-battery-test-blueprint)
-- [Project structure](#-project-structure)
-- [CLI tools](#-cli-tools)
-- [ReefWave and cloud sync](#-important-reefwave-and-cloud-synchronization)
-- [Troubleshooting](#-troubleshooting)
 
 - [Quick install](#-quick-install)
 - [Hardware mounting levels](#-hardware-mounting-levels)
@@ -209,11 +189,9 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 
 > ⚠️ **Safety**: a **15A fuse** on the battery + pole, right after the battery, is mandatory. This rating matches the 2.5 mm² cable capacity (~16A max) and provides comfortable margin against typical peak consumption of ~9A (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). In case of a short circuit on the load side, this is what saves the battery (and your house).
 
-> 🔧 **TO DO after switching to battery — recalibrate the skimmer probes**
+> 🔧 **DC Skimmer cup full sensor issue**: when powered by the LiFePO₄ battery (26-27V instead of the original 24V), the skimmer's **cup full sensor becomes unreliable** — it triggers false "cup full" alarms even after recalibration. This is a hardware limitation of the probe at higher voltage.
 >
-> The supply voltage on the 24 V LiFePO4 battery (≈ 24 to 28 V depending on SoC) is **not the same** as the original Red Sea transformer. Since the skimmer motor speed depends directly on voltage, the air flow and the water level in the cup change once running on battery.
->
-> **After connecting to the battery, recalibrate the skimmer probes / settings** (operating point and overflow level) for the new voltage, otherwise the cup may overflow or skimming may become ineffective. Recalibrate at the supply actually used in normal operation (battery floating or transformer, depending on your setup).
+> **Recommended fix**: add a [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) between the battery bus and the skimmer only, adjusted to 24.0V output. Wire it to the skimmer's IP68 connector (pins 1+3 only). Then recalibrate the cup sensor via the ReefBeat app. The ReefWave and ReefRun stay connected directly to the battery — they work fine at 26-27V.
 
 #### ✅ What you get
 
@@ -239,14 +217,13 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 |---|---|---|
 | ![INA226](docs/images/ina226.png) **INA226 module 0-36V/20A** (2 mΩ onboard shunt) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
 | ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (or newer) | [Pi 3 B+ 1GB at Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
-| 16 GB class 10 microSD + USB cable for the Pi | — | ~15 € |
+| 16 GB class 10 microSD + Pi USB power supply | — | ~15 € |
+| DC-DC converter 24V → 5V 3A for the Pi | Step-down buck regulator | ~8 € |
 | ![Finder](docs/images/finder.png) **Finder 40.61.8.230.4000 relay** (230V coil, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
 | ![Support](docs/images/support.png) **Finder 95.95.3 DIN socket** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
 | 35 mm DIN rail (10 cm) + small electrical enclosure | — | ~15 € |
 
-**Additional budget: ~104 €** — **Cumulative level 2 budget: ~394 €**
-
-> 💡 **Powering the Pi**: the Kepworth 24V 60Ah battery has a **built-in 5V USB port** that powers the Raspberry Pi directly. No 24V→5V DC-DC converter is needed — just a USB cable between the battery's 5V port and the Pi.
+**Additional budget: ~112 €** — **Cumulative level 2 budget: ~402 €**
 
 #### 🔌 Wiring diagram
 
@@ -263,18 +240,22 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
                      ┌─────────────┐   └────┬─────┘
                      │   Battery   │        │ NO/NC
               ┌──────┤  LiFePO₄    │        │ contact
-              │      │ (built-in   │        │
-              │      │  5V port)   │        │
-              │      └──┬───────┬──┘        │
-              │         │ 24V   │ 5V (USB)  │
-              │  [Shunt INA226] │           │
-              │         │       ▼           │
-              │         │  ┌────────────────┐
-              ├─────────┘  │  Raspberry Pi  │◄──────┘
-              │       I2C  │   GPIO 26      │ GPIO state
-              │       SDA  │   GPIO 2 SDA   │
-              │       SCL  │   GPIO 3 SCL   │
-              │            └────────────────┘
+              │      └──────┬──────┘        │
+              │             │ 24V           │
+              │      [Shunt INA226]         │
+              │             │               │
+              │             ▼               │
+              │    ┌────────────────┐       │
+              │    │ DC-DC 24V→5V  │       │
+              │    └────────┬───────┘       │
+              │             │ 5V            │
+              │             ▼               │
+              │    ┌────────────────┐       │
+              ├────│  Raspberry Pi  │◄──────┘
+              │I2C │   GPIO 26     │ GPIO state
+              │SDA │   GPIO 2 SDA  │
+              │SCL │   GPIO 3 SCL  │
+              │    └────────────────┘
               │
               ▼
        ReefRun / ReefWave / DC Skimmer
@@ -288,21 +269,17 @@ The INA226 module must be **in series on the battery + pole**, between the batte
 
 ```
 Battery (+) ──► [IN+ shunt INA226 IN−] ──► Bus + 24V ─┬─► Charger (output)
+                                                        ├─► DC-DC to Pi
                                                         ├─► ReefRun
                                                         ├─► ReefWave
                                                         └─► DC Skimmer
 
 Battery (−) ──────────────────────────► Bus − (common)
-
-(The Raspberry Pi is powered separately from the battery's built-in 5V USB
- port, downstream of the shunt — see the coulomb counting note below.)
 ```
 
 The shunt sees:
 - **positive current** = battery is discharging (supplying loads)
 - **negative current** = battery is charging (from charger)
-
-> ⚠️ **Pi consumption not measured**: since the Raspberry Pi is powered from the battery's built-in 5V USB port (downstream of the INA226 shunt), its consumption (~0.5–1 A at 5V, i.e. ~0.1–0.2 A referred to 24V) is **not counted** by the coulomb counting. Real autonomy will therefore be slightly lower than the estimate. If you want an exact measurement, power the Pi through a 24V→5V DC-DC converter wired **downstream of the shunt** (on the 24V bus) instead of the battery's 5V port.
 
 **Outage detection relay wiring**:
 
@@ -348,9 +325,7 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 |---|---|---|
 | 🔌 **Victron BLE charger** | Silent charger + charger state in HA | ✅ Yes |
 | ⚡ **Connected circuit breaker** | Automated discharge tests from HA | ✅ Yes |
-| 📶 **4G LTE USB modem** | Send notifications when Wi-Fi is down | ✅ Yes |
-
-> 💡 **Alternative to the USB modem**: you can use a smartphone connected via USB tethering instead of the E3372h. See the [tethering section](#usb-tethering-alternative) below.
+| 📶 **4G LTE module** | Notifications + ReefBeat cloud access when Wi-Fi is down | ✅ Yes |
 
 #### 📦 Additional hardware (on top of level 2)
 
@@ -358,9 +333,17 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 |---|---|---|
 | ![Charger BLE](docs/images/chargeur.png) **Victron Blue Smart IP22 24/12** *(replaces Kepworth charger — silent + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Circuit breaker](docs/images/disjoncteur.png) **Connected Wi-Fi circuit breaker 16A with meter** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
-| ![Huawei E3372h](docs/images/huawei-e3372h-320.png) **Huawei E3372h-320 4G LTE USB modem** | [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) | ~40 € |
+| **SIM7600G-H 4G HAT** *(recommended — integrated on the Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
+| **DC-DC 24V→5V 5A module** *(required if using SIM7600 HAT — the RPi USB alone can't power both)* | [DC-DC Buck 9-36V to 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2.50 € |
 
-**Maximum additional budget: ~225 €** (all three) — **Cumulative level 3 budget: ~627 €**
+*Or alternatively to the SIM7600:*
+
+| Component | Suggested model | Approx. price |
+|---|---|---|
+| ![Huawei E3372h](docs/images/huawei-e3372h-320.png) **Huawei E3372h-320 4G USB dongle** *(plug-and-play, no extra power needed)* | [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) | ~40 € |
+| **USB tethering from a smartphone** *(no extra hardware, phone powered via RPi USB)* | — | 0 € |
+
+**Maximum additional budget: ~262 €** (all three with SIM7600) — **Cumulative level 3 budget: ~664 €**
 
 #### 🔌 Wiring diagram
 
@@ -420,53 +403,40 @@ Publishes to HA:
 
 Configuration: retrieve the **encryption key** from the VictronConnect app (Settings → Product Info → Instant Readout → "Show"), enter it in the configuration wizard.
 
-**Huawei E3372h-320 4G LTE USB modem**:
+**SIM7600G-H 4G HAT** *(recommended)*:
+
+The [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) plugs directly onto the Raspberry Pi's GPIO header. LTE Cat4 150 Mbps, global bands, with GNSS positioning.
+
+The wizard automatically configures it in **RNDIS mode** — the module appears as a USB network interface (`usb0`) with DHCP. No PPP, QMI, or AT commands needed for data after initial setup.
+
+**First-time setup** (handled by the wizard):
+1. Configure APN: `AT+CGDCONT=1,"IP","your_apn"`
+2. Switch to RNDIS: `AT+CUSBPIDSWITCH=9011,1,1`
+3. Module reboots → `usb0` appears with IP via DHCP
+
+After initial setup, the module boots automatically in RNDIS mode at every RPi startup — fully autonomous.
+
+> ⚡ **Power note**: the RPi's built-in USB port can power the Pi alone (~2.1A), but **not both the Pi and the SIM7600 HAT**. When using the SIM7600, power the RPi through a [DC-DC 24V→5V 5A buck module](https://www.amazon.fr/dp/B0F9FLF6QB) (~2.50€) connected to the battery bus, feeding the RPi's GPIO pins 2 (5V) and 6 (GND) — not the USB-C port.
+
+**Testing:** `python3 test_sim7600.py` runs a complete diagnostic (serial, SIM, signal, network, connectivity).
+
+**LTE monitoring**: every 10 minutes (configurable), the system queries the modem via AT commands and publishes to HA: signal strength (dBm), signal quality, operator, network type (4G/3G/2G), SIM status, modem model, firmware, IMEI, IP, and connectivity status.
+
+##### Huawei E3372h-320 alternative
 
 <p align="center">
   <img src="docs/images/huawei-e3372h-320.png" alt="Huawei E3372h-320" width="300">
 </p>
 
-LTE Cat4 150 Mbps, bands 1/3/7/8/20 (800/900/1800/2100/2600 MHz), plug-and-play HiLink mode. Just plug it into the Pi's USB port with an active SIM card — it creates a virtual Ethernet interface (`eth1`), no driver or PPP configuration needed.
+The [E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) (~40€) is a simpler plug-and-play option. Just plug it into the Pi's USB port with an active SIM card — it creates a virtual Ethernet interface (`eth1`), no configuration needed. HiLink web interface at `http://192.168.8.1`.
 
-When Wi-Fi and home router are both down, the notifier automatically detects the modem, checks cellular connectivity, and routes ntfy.sh notifications through 4G. HiLink web interface available at `http://192.168.8.1` for signal/status monitoring.
-
-> 🔑 **SIM PIN**: during setup, the wizard detects if the SIM requires a PIN, enters it, and proposes to **disable it permanently**. This is strongly recommended — without it, the modem cannot reconnect automatically after a power cycle.
-
-**4G internet gateway for ReefBeat devices**: when the RPi hotspot is active and this option is enabled, the RPi acts as a NAT router — it forwards internet traffic from the ReefBeat devices (connected to the hotspot) through the 4G modem. This means the **Red Sea mobile app keeps working** during a power outage, as the ReefBeat controllers can still reach the Red Sea cloud servers.
+> 🔑 **SIM PIN**: during setup, the wizard detects if the SIM requires a PIN, enters it, and proposes to **disable it permanently**. Strongly recommended — without it, the modem cannot reconnect after a power cycle.
 
 ##### USB tethering alternative
 
-If you don't want to buy a USB modem, you can use a **smartphone connected via USB** as a 4G/5G modem. Enable USB tethering on the phone (Settings → Network → Hotspot → USB tethering), plug it into the RPi, and the wizard will detect it.
+If you don't want to buy a modem, you can use a **smartphone connected via USB** as a 4G/5G modem. Enable USB tethering on the phone (Settings → Network → Hotspot → USB tethering), plug it into the RPi, and the wizard will detect it. The phone is powered via USB from the RPi (which is on battery), so it stays charged during the outage.
 
-**Pros**: no extra hardware to buy, uses your existing phone and data plan. The phone is powered via USB from the RPi (which is on battery), so it stays charged during the outage.
-
-**Cons**: USB tethering may need to be re-enabled after a phone reboot, and the phone must stay physically connected. The E3372h is fully autonomous and always ready.
-
-> ⚠️ **Important limitation — tethering lost on RPi reboot**: most smartphones (Android and iPhone alike) **automatically disable USB tethering as soon as the USB link is cut or reset**. An RPi reboot resets the USB bus, so when it comes back the phone has dropped tethering and the `usb0` interface does not reappear. This is intentional behaviour in the phone's OS, not a bug in the project — and it cannot be worked around from the RPi side.
->
-> To diagnose after a reboot (without touching the phone):
-> ```bash
-> ip link show        # does usb0 appear?
-> ip addr show usb0   # does it have an IP?
-> ```
-> - `usb0` **missing** → the phone dropped tethering. Only fixes: re-enable USB tethering manually on the phone, use an auto-re-enable app (Tasker / "USB Tether Auto" on Android, reliability varies by model), or switch to the E3372h dongle.
-> - `usb0` **present but no IP** → the phone is still tethering but the RPi didn't reconfigure the interface; this is fixable on the RPi side (re-run `dhcpcd`/`dhclient` on `usb0`).
->
-> 🛠️ **Android fix — automatic tethering re-enable (`usb0` missing case)**
->
-> Most Android phones can force **USB tethering** as the default USB mode via the **developer options**. The phone then automatically re-enables tethering as soon as the RPi reconnects (after a reboot, for example), with no manual action:
->
-> 1. **Enable developer options**: *Settings → About phone* → tap **Build number** **7 times** (a "You are now a developer" message appears).
-> 2. Open *Settings → System → Developer options* (exact location varies by manufacturer).
-> 3. Find **Default USB configuration** and select **USB tethering** (depending on the skin: "USB tethering", "Tethering", etc.).
-> 4. Optional: if present, also enable **Tethering hardware acceleration**.
-> 5. Leave the phone plugged into the RPi. On the next RPi reboot, tethering should come back on its own.
->
-> ⚠️ The wording and location of these settings **vary by Android version and manufacturer** (Samsung/One UI, Pixel, Xiaomi…). On some skins the setting doesn't fully "stick" after a system update — test it by doing a real RPi reboot and checking with `ip addr show usb0`. If it doesn't hold on your model, the E3372h dongle remains the safest option.
->
-> 🔑 **Recommendation**: for **reliable, unattended** failover, prefer the **Huawei E3372h** dongle. In HiLink mode it is fully autonomous, resets itself, and survives RPi reboots without issue. Smartphone tethering is only an acceptable stopgap if you can re-enable tethering manually, or if the RPi never reboots unattended.
-
-> ℹ️ **Automatic routing priority**: during configuration, the wizard pins a **high metric (700)** on the tethering interface (`usb0`) in `/etc/dhcpcd.conf`. Without this, dhcpcd may give `usb0` a low metric (100) and route **all** of the RPi's traffic over 4G even on mains power — needlessly burning through your data plan. With metric 700, 4G stays a backup behind Ethernet (`eth0`) and Wi-Fi (`wlan0`), used only if both go down. The setting is applied live *and* persisted for future connections.
+**4G internet gateway for ReefBeat devices** *(all three LTE options)*: when the RPi hotspot is active, the RPi acts as a NAT router — it forwards internet traffic from the ReefBeat devices (connected to the hotspot) through 4G. The **Red Sea mobile app keeps working** during a power outage.
 
 #### ✅ What you get
 
@@ -475,7 +445,8 @@ If you don't want to buy a USB modem, you can use a **smartphone connected via U
 - **Full charger visibility** (mode, current, errors)
 - **Total consumption measurement** in kWh via the Tongou breaker
 - **Notifications even when everything is down** via 4G LTE
-- **Red Sea mobile app keeps working** during outages (4G gateway routes ReefBeat traffic to the cloud)
+- **Red Sea mobile app keeps working** during outages (4G gateway)
+- **LTE telemetry in HA** — signal, operator, network type, SIM status, IMEI
 
 ---
 
@@ -578,9 +549,6 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 | `sensor.reef_battery_outage_duration` | Current outage duration (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 |
-| `sensor.reef_battery_energy_discharged` | Cumulative energy out of battery (kWh) — *Energy dashboard* |
-| `sensor.reef_battery_energy_charged` | Cumulative energy into battery (kWh) — *Energy dashboard* |
-| `sensor.reef_battery_energy_consumed` | Total system load since boot (kWh) — *Energy dashboard* |
 
 **If Victron BLE is configured** (level 3):
 
@@ -591,210 +559,23 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
 
-### Control entities (test)
+**If 4G LTE is configured** (level 3):
 
-These entities let you test the system without waiting for a real outage:
-
-| Entity | Description |
+| Sensor | Description |
 |---|---|
-| `switch.reef_battery_test_plan` | Applies the test level to the pumps (reduced speed + one pump off via `per_device`), no outage needed. OFF = restore. |
-| `button.reef_battery_test_pumps` | Runs an on-demand pump command test: applies the test level, holds it a few seconds, then restores automatically. |
-| `number.reef_battery_wifi_cut_min` | Cuts the Pi's Wi-Fi for N minutes (0 = none) to observe network failover. The link is always restored automatically. |
+| `sensor.reef_battery_lte_signal` | Signal strength (dBm) |
+| `sensor.reef_battery_lte_signal_quality` | Signal quality (0-31 RSSI scale) |
+| `sensor.reef_battery_lte_operator` | Operator name (e.g. Orange F) |
+| `sensor.reef_battery_lte_network_type` | Network type (LTE/HSPA+/EDGE/GSM) |
+| `sensor.reef_battery_lte_sim_status` | SIM status (ready/pin_required/absent) |
+| `sensor.reef_battery_lte_connected` | Internet reachable via 4G (ON/OFF) |
+| `sensor.reef_battery_lte_ip` | LTE interface IP address |
+| `sensor.reef_battery_lte_model` | Modem model |
+| `sensor.reef_battery_lte_manufacturer` | Modem manufacturer |
+| `sensor.reef_battery_lte_firmware` | Modem firmware version |
+| `sensor.reef_battery_lte_imei` | Modem IMEI |
 
-These entities require `test_level` (and `test_hold_seconds`) configured in `config.json`.
-
-### Energy dashboard & Power Flow Card
-
-The three counters `energy_discharged`, `energy_charged` and `energy_consumed` are declared with `device_class: energy` and `state_class: total_increasing`: they are **directly eligible** in Home Assistant's Energy dashboard (*Settings → Dashboards → Energy*):
-
-- **Battery storage** → add the pair `energy_charged` (in) / `energy_discharged` (out).
-- **Individual device consumption** → add `energy_consumed` to track daily / weekly / monthly system load.
-
-Counters are persisted to disk every 60 s, so a reboot does not reset the totals.
-
-#### Power Flow Card Plus
-
-For a real-time visualisation of the energy flow (mains ↔ battery ↔ aquarium), the community card [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) does the job nicely:
-
-![Power Flow Card](docs/images/power-flow-card.png)
-
-This setup requires **two community cards** installed via HACS → Frontend:
-
-1. [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) — the flow card itself.
-2. [`config-template-card`](https://github.com/iantrich/config-template-card) — a wrapper that injects dynamic values (icons here) into the child card's config. Required because `power-flow-card-plus` only supports a static icon per `individual` node ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)).
-
-Both RSWave first get aggregated (forward + reverse) via two template sensors, and the two RSRun are wrapped as `sensor` so they show with a clean `%` unit:
-
-```yaml
-# configuration.yaml — adjust prefix to match your mqtt.device_name
-# and the RSWave / RSRun IDs.
-template:
-  - sensor:
-      # RSWave Gyre 1 — fold the two directional intensities into one
-      # active-speed value (state = max) and expose the direction as
-      # an attribute (shown in the card's secondary_info).
-      - name: "RSWave Gyre 1 Speed"
-        unique_id: rswave_gyre1_speed
-        unit_of_measurement: "%"
-        state: >
-          {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
-          {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
-          {{ [f, r] | max | round(0) }}
-        attributes:
-          direction: >
-            {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
-            {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
-            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
-
-      - name: "RSWave Gyre 2 Speed"
-        unique_id: rswave_gyre2_speed
-        unit_of_measurement: "%"
-        state: >
-          {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
-          {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
-          {{ [f, r] | max | round(0) }}
-        attributes:
-          direction: >
-            {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
-            {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
-            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
-
-      # RSRun — wrap the `number` entities as `sensor`s to get clean
-      # entity_ids in the card. No icon defined here: it will be
-      # injected dynamically at card level by config-template-card.
-      - name: "Return Pump Speed"
-        unique_id: rsrun_return_speed
-        unit_of_measurement: "%"
-        state: "{{ states('number.rsrun_<your_pump_id>_pump_1_vitesse') }}"
-
-      - name: "Skimmer Speed"
-        unique_id: rsrun_skimmer_speed
-        unit_of_measurement: "%"
-        state: "{{ states('number.rsrun_<your_pump_id>_pump_2_vitesse') }}"
-```
-
-Full card config, with dynamic `redsea:*` icons driven by `config-template-card`:
-
-```yaml
-type: custom:config-template-card
-variables:
-  GYRE1_ICON: |
-    (() => {
-      const v = Math.max(
-        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_avant'].state) || 0,
-        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_arriere'].state) || 0
-      );
-      if (v <= 0) return 'redsea:gyre-off';
-      if (v < 35) return 'redsea:gyre-min';
-      if (v < 70) return 'redsea:gyre-med';
-      return 'redsea:gyre-max';
-    })()
-  GYRE2_ICON: |
-    (() => {
-      const v = Math.max(
-        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_avant'].state) || 0,
-        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_arriere'].state) || 0
-      );
-      if (v <= 0) return 'redsea:gyre-off';
-      if (v < 35) return 'redsea:gyre-min';
-      if (v < 70) return 'redsea:gyre-med';
-      return 'redsea:gyre-max';
-    })()
-  PUMP_ICON: |
-    parseFloat(states['number.rsrun_<your_pump_id>_pump_1_vitesse'].state) > 0
-      ? 'redsea:pump-on' : 'redsea:pump-off'
-  SKIMMER_ICON: |
-    parseFloat(states['number.rsrun_<your_pump_id>_pump_2_vitesse'].state) > 0
-      ? 'redsea:skimmer-on' : 'redsea:skimmer-off'
-# Entities to subscribe to: config-template-card re-evaluates the
-# ${...} variables whenever one of them changes state, keeping
-# rendering efficient even with several variables.
-entities:
-  - sensor.rswave45_<your_wave1_id>_intensite_marche_avant
-  - sensor.rswave45_<your_wave1_id>_intensite_marche_arriere
-  - sensor.rswave45_<your_wave2_id>_intensite_marche_avant
-  - sensor.rswave45_<your_wave2_id>_intensite_marche_arriere
-  - number.rsrun_<your_pump_id>_pump_1_vitesse
-  - number.rsrun_<your_pump_id>_pump_2_vitesse
-card:
-  type: custom:power-flow-card-plus
-  title: Reef Battery Backup
-  entities:
-    battery:
-      entity: sensor.reef_battery_backup_puissance
-      state_of_charge: sensor.reef_battery_backup_soc_batterie
-      name: Batterie LiFePO4
-      icon: mdi:battery
-      # Internal convention: power > 0 = discharge. The card expects
-      # the opposite (power > 0 = charge), hence invert_state.
-      invert_state: true
-      color:
-        consumption: "#4caf50"
-        production: "#ff9800"
-      display_state: two_way
-      show_state_of_charge: true
-      state_of_charge_unit: "%"
-      state_of_charge_decimals: 0
-    home:
-      entity: sensor.reef_battery_backup_energie_consommee
-      name: Aquarium
-      icon: mdi:fishbowl-outline
-      color_value: true
-    grid:
-      entity: sensor.reef_battery_backup_tension_chargeur
-      name: Mains
-      icon: mdi:transmission-tower
-      color_value: true
-    individual:
-      - entity: sensor.rswave_gyre_1_speed
-        name: Gyre 1
-        color: "#00bcd4"
-        icon: ${GYRE1_ICON}
-        unit_of_measurement: "%"
-        display_zero: true
-        secondary_info:
-          template: |
-            {{ state_attr('sensor.rswave_gyre_1_speed', 'direction') }}
-      - entity: sensor.rswave_gyre_2_speed
-        name: Gyre 2
-        icon: ${GYRE2_ICON}
-        color: "#00bcd4"
-        unit_of_measurement: "%"
-        display_zero: true
-        secondary_info:
-          template: |
-            {{ state_attr('sensor.rswave_gyre_2_speed', 'direction') }}
-      - entity: sensor.return_pump_speed
-        name: Return pump
-        icon: ${PUMP_ICON}
-        color: "#2196f3"
-        unit_of_measurement: "%"
-        display_zero: true
-      - entity: sensor.skimmer_speed
-        name: Skimmer
-        icon: ${SKIMMER_ICON}
-        color: "#ff2030"
-        unit_of_measurement: "%"
-        display_zero: true
-  clickable_entities: true
-  display_zero_lines:
-    mode: show
-    transparency: 50
-  use_new_flow_rate_model: true
-  min_flow_rate: 0.75
-  max_flow_rate: 6
-  transparency_zero_lines: 0
-  kilo_threshold: 1000
-  base_decimals: 0
-  kilo_decimals: 2
-```
-
-Adjust the 35 % / 70 % thresholds for the `gyre-min` / `gyre-med` / `gyre-max` transitions to match your typical operating range.
-
-> **Notes**
-> - Adapt the `reef_battery_backup_*` prefix to your `mqtt.device_name`, and the RSWave (`rswave45_XXXXXXX`) and RSRun (`rsrun_XXXXXXXXXX`) IDs.
-> - The `redsea:*` icons (gyre, pump, skimmer) come from the iconset installed automatically by the [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) integration.
-> - The `grid` node uses `tension_chargeur` (V) here as a mains-presence indicator — this is intentional, we visualise *whether* mains is present, not how many watts it provides. For a proper energy-flow diagram in watts, you can create template sensors `Reef Backup Grid Power` (= charger V × A) and `Reef Backup Load Power` (= charger output − signed battery power) and use those instead.
+LTE sensors are updated every 10 minutes (configurable via `lte_monitor.check_interval_min` in `config.json`).
 
 ### MQTT buffer
 
@@ -839,27 +620,10 @@ Power outage detected (relay GPIO, instant)
     │
     └── Step 3: create mirror hotspot (same SSID + password on wlan0)
             │
-            ├── MAC whitelist: only the controlled pumps (MACs collected
-            │    during setup via /wifi) may associate. Without it, every
-            │    Wi-Fi device in the house falls back onto the hotspot,
-            │    saturates the Pi's radio and starves the pumps of an IP.
-            │
             ├── ReefBeat devices auto-reconnect to RPi hotspot
             │    (they already know the SSID/password)
             │
-            ├── Addressing: on the hotspot the pumps live on 192.168.4.0/24
-            │    (≠ the 192.168.0.0/24 LAN). Each pump keeps its last octet
-            │    (192.168.0.83 → 192.168.4.83) via a per-MAC DHCP reservation.
-            │    The code remaps the IPs automatically (by MAC, falling back
-            │    to octet substitution) so pings and commands follow them.
-            │
             ├── RPi controls pumps locally via HTTP API
-            │
-            ├── Waiting for pumps: some (RSRUN) only rejoin after their Wi-Fi
-            │    watchdog (~15 min). Failover waits up to 900s and returns as
-            │    soon as ALL are present, logging progress (n/total). The eco
-            │    level is applied immediately to already-reachable pumps,
-            │    without waiting for the slow ones.
             │
             ├── If 4G modem (E3372h or USB tethering) is available:
             │       │
@@ -877,70 +641,24 @@ Power outage detected (relay GPIO, instant)
     │
     ├── Battery SoC → adjusts pump intensity (eco → survival → critical)
     ├── Wi-Fi availability → if home Wi-Fi reappears, switch back from hotspot
-    ├── 4G connectivity → route notifications and ReefBeat traffic
-    └── Pump health (health-check) → while on hotspot, checks every 60s who
-         responds, re-remaps IPs, and re-applies the eco level to pumps that
-         have just rejoined (catches slow/late devices)
+    └── 4G connectivity → route notifications and ReefBeat traffic
 
 
 Power restored (relay GPIO, instant)
     │
     ├── Hotspot deactivated (if active), NAT rules cleaned
     │
-    ├── Pump IPs restored to their original LAN addresses (192.168.0.x)
-    │
     ├── RPi reconnects to Ethernet (eth0) when switches come back
     │    (automatic — Linux prioritizes eth0 over wlan0)
     │
     ├── ReefBeat devices reconnect to home router Wi-Fi
     │
-    ├── Pump intensity restored from the on-disk snapshot. Pumps can be slow
-    │    to rejoin Wi-Fi on power return, so the restore retries in the
-    │    background until all are restored (and can be re-run manually with
-    │    `restore_pumps.py`).
+    ├── Pump intensity restored to 100%
     │
     ├── MQTT buffer replayed → HA gets the complete discharge curve
     │
     └── ntfy notification: "Power restored after Xh, SoC Y%"
 ```
-
----
-
-## 🛡️ Reliability & recovery
-
-Several mechanisms keep the system consistent even when something goes wrong (Pi reboot mid-outage, a pump unreachable at the wrong moment, a device slow to rejoin).
-
-### Pump config snapshots
-
-Before reducing a pump, its original configuration (RSRUN schedule, RSWAVE wave program) is saved to disk under `/var/lib/reefbeat-energy-backup/snapshots/`. On power return it is re-applied exactly, then the snapshot is removed. A lingering snapshot means "restore still pending" — so it survives a Pi reboot.
-
-In addition, a **reference snapshot** is captured periodically (hourly by default) during nominal operation, under `/var/lib/reefbeat-energy-backup/reference/`. These references are never deleted and act as a safety net: if the capture at the start of an outage fails (pump already unreachable), the system falls back to the last known reference.
-
-### Robust restore with retry
-
-On power return, Red Sea pumps can be slow to rejoin Wi-Fi. The restore does an immediate pass, then **retries in the background** (every 30s, up to 40 attempts by default) while snapshots remain. It can also be re-run manually:
-
-```bash
-python3 restore_pumps.py            # re-run restore from snapshots
-python3 restore_pumps.py --list     # list pending pumps, no action
-python3 restore_pumps.py --retries 20 --interval 20
-```
-
-### Periodic health-check
-
-The system regularly probes each pump and logs a summary line — who responds, in which mode, and from which network mode:
-
-```
-[HEALTH] ✅ 4/4 devices reachable | net=hotspot | battery | RSWAVE45-...=auto, ...
-```
-
-The cadence adapts: 5 min on mains, 15 min on battery (energy saving), **60s on the hotspot** (to quickly catch a pump that is slow to rejoin). On battery, a pump that transitions from unreachable to reachable has the current eco level re-applied automatically.
-
-### Robust SoC computation
-
-Coulomb counting clamps its integration step: an abnormally long loop cycle (a BLE read timing out, system load) can no longer cause an artificial SoC jump. On battery, blocking BLE reads to the (unreachable) charger are skipped and stale charger telemetry is purged.
-
-> ⚠️ **Pi draw not measured**: the Pi is powered downstream of the INA226 shunt (battery 5V port), so its consumption is not counted in coulomb counting. Real autonomy is therefore slightly lower than the estimate.
 
 ---
 
@@ -1061,8 +779,10 @@ outage.py                           Outage detection (relay GPIO)
 hotspot.py                          3-level network failover
 controller.py                       Pump control + outage orchestration
 notifier.py                         Push notifications (ntfy.sh + 4G LTE)
+lte_monitor.py                      LTE modem telemetry (MQTT sensors)
 test_notif.py                       CLI notification tester
 test_reefbeat.py                    CLI ReefBeat equipment tester
+test_sim7600.py                     CLI SIM7600G-H 4G module tester
 updater.py                          Self-update module (GitHub + HA update entity)
 update.py                           CLI update tool
 VERSION                             Current version number
@@ -1086,6 +806,7 @@ blueprints/
 | `python3 test_reefbeat.py` | Test ReefBeat device communication |
 | `python3 test_reefbeat.py --read` | Read current state of all devices |
 | `python3 test_reefbeat.py --test-all` | Full test cycle (read → change → verify → restore) |
+| `python3 test_sim7600.py` | Test SIM7600G-H 4G module (serial, SIM, signal, connectivity) |
 | `python3 test_notif.py` | Test push notifications |
 | `python3 update.py` | Check for updates |
 | `python3 update.py --install` | Install available update |
@@ -1162,28 +883,6 @@ However, the **Red Sea cloud and mobile app are unaware of this change**. The cl
 
 > 💡 This limitation only affects ReefWave. ReefRun (return pumps, skimmers) are controlled locally and stay in sync with the app at all times.
 
-### ReefWave firmware compatibility (ESP8266 vs ESP32)
-
-There are two ReefWave generations, and reefbeat⚡Backup handles both:
-
-- **ESP32** (recent firmware, e.g. `0.10.0`) — plenty of memory, accepts a full program in a single request.
-- **ESP8266** (older firmware, e.g. `3.0.0`) — very limited memory. Its JSON parse buffer is too small to swallow a `POST /auto` carrying 3 or more intervals at once: it replies `HTTP 400 "could not parse the received JSON"`, **even though it stores and runs 5+ intervals perfectly fine** (the Red Sea app pushes them incrementally).
-
-To stay compatible with both, the wave-program restore **sends intervals one at a time** inside a single edit cycle:
-
-```
-POST /auto/init       {"uid": op_uid}
-POST /auto            {"intervals": [interval_0]}
-POST /auto            {"intervals": [interval_1]}
-…                     (one POST per interval — the device accumulates them)
-POST /auto/complete   {"uid": op_uid}
-POST /auto/apply      {"uid": op_uid}
-```
-
-Each request stays tiny, so the ESP8266 buffer is enough and the firmware appends the intervals. This also works on the ESP32: a single code path for both generations.
-
-> 💡 The same care applies to the `ha-reefbeat` Home Assistant integration (editing a wave via the local API): it also pushes intervals one at a time.
-
 ---
 
 ## 🐛 Troubleshooting
@@ -1195,16 +894,6 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues:
 - Victron `'Scanner' has no attribute 'scan'` → incompatible `victron-ble` version
 - MQTT discovery sensors missing → check credentials and `base_topic`
 - `runtime_h` shows `-1.0` → update to latest version (fixed)
-
-**Backup hotspot specific:**
-
-- A pump stays `DOWN` on the hotspot → check its MAC is in `controller_mac_ips` (otherwise the whitelist rejects it). Re-run `configure.py` to (re)collect it via `/wifi`.
-- A pump takes a long time to rejoin → some models (RSRUN) only switch over after their Wi-Fi watchdog (~15 min). Failover waits up to 900s; let the test run long enough. The watchdog is adjustable on the Red Sea side.
-- DHCP reservations not honored → the hotspot DHCP range must cover the pumps' last octets. Auto-migration widens the range to `.250` at startup; check `hotspot.dhcp_end` in `config.json`.
-- `[DHCP]` logs showing unknown devices → those are stale leases; they are now purged on activation and only whitelisted pumps are shown.
-- ReefWave restore failing with `HTTP 400 "could not parse the received JSON"` → old ESP8266 firmware whose JSON buffer is too small for a multi-interval program sent in one block. The restore now sends intervals one at a time (see "ReefWave firmware compatibility"), which fixes it. Updating the pump firmware via the Red Sea app is recommended but not required.
-
-> 💡 At startup the service prints `[CONFIG] Auto-migrated settings` if it filled in/fixed settings from an older `config.json` (DHCP range, reconnect timeout, health-check cadence). Edit `config.json` to make those values permanent.
 
 ---
 

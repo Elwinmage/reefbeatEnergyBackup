@@ -288,76 +288,8 @@ except ImportError:
     HAS_REQUESTS = False
 
 
-# Interface name prefixes we never want to scan for ReefBeat devices.
-# usb*/ppp*/wwan*/rmnet* = USB tethering or 4G/LTE dongle (the WAN side),
-# uap*/ap* = our own captive hotspot, lo = loopback. ReefBeat pumps live on
-# the LAN (Ethernet or home Wi-Fi), never on these.
-_SCAN_EXCLUDED_IFACE_PREFIXES = (
-    "lo", "usb", "ppp", "wwan", "rmnet", "uap", "ap", "docker", "veth", "br-",
-)
-
-# Preferred scan order: wired first (more reliable), then Wi-Fi.
-_SCAN_IFACE_ORDER = ("eth", "en", "wlan", "wl")
-
-
-def _iface_ipv4_subnet(iface: str) -> Optional[str]:
-    """Return the IPv4 CIDR (e.g. '192.168.0.12/24') bound to an interface."""
-    try:
-        import netifaces  # local import: optional dependency
-        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
-        for a in addrs:
-            ip = a.get("addr")
-            netmask = a.get("netmask")
-            if not ip or not netmask or ip.startswith("169.254."):
-                continue  # skip link-local / unconfigured
-            prefix = ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
-            return f"{ip}/{prefix}"
-    except Exception:
-        pass
-    return None
-
-
-def _list_lan_interfaces() -> List[str]:
-    """List candidate LAN interfaces, wired first then Wi-Fi, tethering excluded."""
-    try:
-        import netifaces
-        all_ifaces = netifaces.interfaces()
-    except Exception:
-        return []
-
-    # Keep only LAN-eligible interfaces.
-    candidates = [
-        i for i in all_ifaces
-        if not i.startswith(_SCAN_EXCLUDED_IFACE_PREFIXES)
-    ]
-
-    # Sort by our preferred order; unknown names go last but are still kept.
-    def order_key(name: str) -> int:
-        for idx, prefix in enumerate(_SCAN_IFACE_ORDER):
-            if name.startswith(prefix):
-                return idx
-        return len(_SCAN_IFACE_ORDER)
-
-    return sorted(candidates, key=order_key)
-
-
 def get_local_subnet() -> Optional[str]:
-    """
-    Detect the LAN subnet CIDR to scan for ReefBeat devices.
-
-    We deliberately do NOT follow the default route here: when 4G/USB
-    tethering failover is active, the default route can point at usb0, and
-    scanning that subnet would never find the pumps. Instead we enumerate
-    real LAN interfaces (Ethernet first, then Wi-Fi) and return the first
-    one that has a usable IPv4 address.
-    """
-    for iface in _list_lan_interfaces():
-        subnet = _iface_ipv4_subnet(iface)
-        if subnet:
-            return subnet
-
-    # Fallback: legacy default-route detection (better than nothing if
-    # netifaces is unavailable or no LAN iface matched).
+    """Detect local subnet CIDR."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
@@ -484,25 +416,7 @@ def get_reefbeat_wifi(ip: str) -> Optional[Dict]:
 
 
 def get_reefbeat_mac(ip: str) -> Optional[str]:
-    """
-    Get the MAC address from a ReefBeat device.
-
-    Primary source is the device's own /wifi endpoint (reliable), which
-    exposes the MAC. Falls back to the system ARP table only if the HTTP
-    read fails.
-    """
-    # Preferred: read it straight from the device.
-    wifi = get_reefbeat_wifi(ip)
-    if wifi:
-        # IMPORTANT: use the device's own MAC ("mac"), NOT "bssid" — bssid
-        # is the access point's MAC, which is identical for every device
-        # and would make all DHCP reservations collide.
-        for key in ("mac", "mac_address", "macAddress", "sta_mac"):
-            val = wifi.get(key)
-            if val and re.match(r"(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", val):
-                return val.lower()
-
-    # Fallback: ARP table (only works if there was recent traffic).
+    """Get MAC address from a ReefBeat device via ARP."""
     try:
         result = subprocess.run(
             ["arp", "-n", ip], capture_output=True, text=True, timeout=5
@@ -511,7 +425,7 @@ def get_reefbeat_mac(ip: str) -> Optional[str]:
             if ip in line:
                 match = re.search(r"(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", line)
                 if match:
-                    return match.group(1).lower()
+                    return match.group(1)
     except Exception:
         pass
     return None
@@ -539,109 +453,6 @@ def scan_reefbeat_devices() -> List[Dict]:
             devices.append(r)
 
     return devices
-
-
-# =============================================================================
-# Default-route priority for the 4G/LTE backup interface
-# =============================================================================
-
-# dhcpcd installs a default route per interface using a "metric". The lowest
-# metric wins. We force a HIGH metric on the 4G/LTE interface so it always
-# loses against Ethernet/Wi-Fi and is only used when both are down. Without
-# this, USB tethering (usb0) can grab metric 100 and capture ALL outgoing
-# traffic even while mains/ADSL is up.
-DHCPCD_CONF = "/etc/dhcpcd.conf"
-DHCPCD_MARK_BEGIN = "# >>> reefbeat-backup: 4G backup metric (managed) >>>"
-DHCPCD_MARK_END = "# <<< reefbeat-backup: 4G backup metric (managed) <<<"
-LTE_BACKUP_METRIC = 700  # higher than typical eth0 (~100) and wlan0 (~600)
-
-
-def set_lte_backup_metric(iface: str, metric: int = LTE_BACKUP_METRIC) -> bool:
-    """
-    Pin a high default-route metric on the 4G/LTE interface in dhcpcd.conf,
-    so it stays a backup behind Ethernet/Wi-Fi.
-
-    Writes an idempotent, marker-delimited block: re-running configuration
-    rewrites the same block instead of appending duplicates. Also applies the
-    metric live (best effort) so the running system is fixed without a reboot.
-    Requires root to persist; falls back to printing manual instructions.
-    """
-    block = (
-        f"{DHCPCD_MARK_BEGIN}\n"
-        f"interface {iface}\n"
-        f"    metric {metric}\n"
-        f"{DHCPCD_MARK_END}\n"
-    )
-
-    # --- Persist to dhcpcd.conf (idempotent block replacement) ---
-    persisted = False
-    try:
-        existing = ""
-        if Path(DHCPCD_CONF).exists():
-            existing = Path(DHCPCD_CONF).read_text()
-
-        if DHCPCD_MARK_BEGIN in existing and DHCPCD_MARK_END in existing:
-            # Replace the managed block in place
-            pattern = re.compile(
-                re.escape(DHCPCD_MARK_BEGIN) + r".*?" + re.escape(DHCPCD_MARK_END) + r"\n?",
-                re.DOTALL,
-            )
-            new_content = pattern.sub(block, existing)
-        else:
-            sep = "" if existing.endswith("\n") or existing == "" else "\n"
-            new_content = f"{existing}{sep}\n{block}"
-
-        Path(DHCPCD_CONF).write_text(new_content)
-        persisted = True
-        ok(t(
-            f"Métrique de secours {metric} appliquée à {iface} dans dhcpcd.conf",
-            f"Backup metric {metric} set for {iface} in dhcpcd.conf",
-        ))
-    except PermissionError:
-        warn(t(
-            f"Pas les droits pour écrire {DHCPCD_CONF} — relancez en root (sudo).",
-            f"No permission to write {DHCPCD_CONF} — re-run as root (sudo).",
-        ))
-    except Exception as e:
-        warn(t(f"Impossible de configurer dhcpcd.conf : {e}",
-               f"Cannot configure dhcpcd.conf: {e}"))
-
-    if not persisted:
-        info(t(
-            f"Ajoutez manuellement dans {DHCPCD_CONF} :",
-            f"Add manually to {DHCPCD_CONF}:",
-        ))
-        info(f"    interface {iface}")
-        info(f"    metric {metric}")
-
-    # --- Apply live (best effort): rewrite the current default route ---
-    try:
-        route_res = subprocess.run(
-            ["ip", "route", "show", "default", "dev", iface],
-            capture_output=True, text=True, timeout=5,
-        )
-        # e.g. "default via 192.168.42.129 dev usb0 metric 100"
-        m = re.search(r"default\s+via\s+(\S+)", route_res.stdout)
-        if m:
-            gw = m.group(1)
-            subprocess.run(
-                ["sudo", "ip", "route", "del", "default", "via", gw, "dev", iface],
-                capture_output=True, timeout=5,
-            )
-            subprocess.run(
-                ["sudo", "ip", "route", "add", "default", "via", gw,
-                 "dev", iface, "metric", str(metric)],
-                capture_output=True, timeout=5,
-            )
-            info(t(
-                f"Route par défaut de {iface} repassée en métrique {metric} (à chaud).",
-                f"{iface} default route re-prioritized to metric {metric} (live).",
-            ))
-    except Exception:
-        # Non-fatal: dhcpcd will apply it on the next lease/reboot anyway.
-        pass
-
-    return persisted
 
 
 # =============================================================================
@@ -976,43 +787,10 @@ def run_wizard(install_dir: str):
                 device_ssids[d["name"]] = ssid
                 info(f"  {d['name']}: SSID = '{ssid}'")
 
-        # MAC is REQUIRED: it drives both the hotspot DHCP reservation
-        # (so the device keeps its IP on the backup AP) and the hotspot
-        # MAC whitelist (so it is allowed to associate at all). A device
-        # without a MAC here will be silently rejected by the hotspot, so
-        # we retry and, as a last resort, ask for it manually.
-        mac = None
-        for attempt in range(3):
-            mac = get_reefbeat_mac(ip)
-            if mac:
-                break
-            time.sleep(1)
-
+        mac = get_reefbeat_mac(ip)
         if mac:
             device_macs[d["name"]] = {"mac": mac, "ip": ip}
             info(f"  {d['name']}: MAC = {mac}")
-        else:
-            warn(t(
-                f"  {d['name']} ({ip}) : MAC introuvable via /wifi !",
-                f"  {d['name']} ({ip}): could NOT read MAC via /wifi!"
-            ))
-            warn(t(
-                "  Sans MAC, cet équipement sera REJETÉ par le hotspot de secours.",
-                "  Without a MAC, this device will be REJECTED by the backup hotspot."
-            ))
-            manual = ask(t(
-                f"  Saisissez la MAC de {d['name']} manuellement (ou laissez vide)",
-                f"  Enter the MAC for {d['name']} manually (or leave empty)"
-            ), "")
-            if manual and re.match(
-                    r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", manual.strip()):
-                device_macs[d["name"]] = {"mac": manual.strip().lower(), "ip": ip}
-                ok(f"  {d['name']}: MAC = {manual.strip().lower()}")
-            else:
-                warn(t(
-                    f"  {d['name']} restera sans réservation/whitelist hotspot.",
-                    f"  {d['name']} will have no hotspot reservation/whitelist."
-                ))
 
     # Check all devices are on the same SSID
     unique_ssids = set(device_ssids.values())
@@ -1075,29 +853,10 @@ def run_wizard(install_dir: str):
         warn(t("Impossible de valider les identifiants",
                "Cannot validate credentials"))
 
-    # Build MAC -> hotspot-IP mapping for the hotspot DHCP reservations.
-    #
-    # On the hotspot the devices live on a different subnet (192.168.4.0/24
-    # by default) than on the home LAN (e.g. 192.168.0.0/24). To keep IPs
-    # predictable and 1:1, we reserve each device's SAME last octet on the
-    # hotspot subnet: 192.168.0.83 -> 192.168.4.83, 192.168.0.176 ->
-    # 192.168.4.176, etc. This makes the hotspot remapping a trivial,
-    # deterministic octet substitution that needs no lease lookup.
-    hotspot_subnet_prefix = "192.168.4"  # 3-octet prefix of hotspot /24
-
-    def to_hotspot_ip(lan_ip: str) -> Optional[str]:
-        parts = lan_ip.split(".")
-        if len(parts) != 4:
-            return None
-        return f"{hotspot_subnet_prefix}.{parts[3]}"
-
+    # Build MAC->IP mapping for hotspot DHCP
     mac_ip_map = {}
     for name, data in device_macs.items():
-        hotspot_ip = to_hotspot_ip(data["ip"])
-        if hotspot_ip:
-            mac_ip_map[data["mac"]] = hotspot_ip
-            info(f"  {name}: réservation hotspot {data['mac']} "
-                 f"-> {hotspot_ip} (LAN {data['ip']})")
+        mac_ip_map[data["mac"]] = data["ip"]
 
     cfg["network"] = {
         "interface": "wlan0",
@@ -1983,6 +1742,7 @@ def _step8_notifications(cfg: dict, defaults: dict):
     import re as _re_detect
 
     e3372h_detected = False
+    sim7600_detected = False
     tethering_detected = False
     lte_interface = None
 
@@ -2007,11 +1767,27 @@ def _step8_notifications(cfg: dict, defaults: dict):
                         lte_interface = m.group(1)
                         info(t(f"  Interface : {lte_interface}",
                                f"  Interface: {lte_interface}"))
+
+        # Detect SIM7600 via lsusb (SIMCOM vendor)
+        if "1e0e:" in result.stdout or "SIMCOM" in result.stdout.upper():
+            sim7600_detected = True
+            ok(t("Module SIM7600G-H détecté !",
+                 "SIM7600G-H module detected!"))
+            # Check if already in RNDIS mode (usb0 with 192.168.225.x)
+            ip_result = subprocess.run(
+                ["ip", "addr", "show"], capture_output=True, text=True, timeout=5
+            )
+            if "192.168.225." in ip_result.stdout:
+                info(t("  Mode RNDIS actif, interface usb0 prête",
+                       "  RNDIS mode active, usb0 interface ready"))
+            else:
+                info(t("  Mode RNDIS non activé (sera configuré)",
+                       "  RNDIS mode not active (will be configured)"))
     except Exception:
         pass
 
-    # Detect USB tethering (usb0 with state UNKNOWN or UP)
-    if not e3372h_detected:
+    # Detect USB tethering (usb0 with state UNKNOWN or UP, not SIM7600)
+    if not e3372h_detected and not sim7600_detected:
         try:
             ip_result = subprocess.run(
                 ["ip", "addr", "show"], capture_output=True, text=True, timeout=5
@@ -2032,17 +1808,17 @@ def _step8_notifications(cfg: dict, defaults: dict):
         except Exception:
             pass
 
-    if not e3372h_detected and not tethering_detected:
-        info(t("Aucune connexion 4G détectée (ni clé USB, ni tethering).",
-               "No 4G connection detected (no USB dongle, no tethering)."))
+    if not e3372h_detected and not sim7600_detected and not tethering_detected:
+        info(t("Aucune connexion 4G détectée (ni clé USB, ni HAT, ni tethering).",
+               "No 4G connection detected (no USB dongle, no HAT, no tethering)."))
 
-    any_detected = e3372h_detected or tethering_detected
+    any_detected = e3372h_detected or sim7600_detected or tethering_detected
     use_lte = ask_yes_no(
         t("Activer le failover 4G/LTE ?", "Enable 4G/LTE failover?"),
         default=any_detected or default_lte.get("enabled", False)
     )
 
-    lte_mode = "none"  # none, e3372h, tethering
+    lte_mode = "none"  # none, e3372h, sim7600, tethering
 
     if use_lte:
         # Choose LTE method
@@ -2052,8 +1828,12 @@ def _step8_notifications(cfg: dict, defaults: dict):
         print()
         lte_methods = [
             ("e3372h", t(
-                "Clé USB Huawei E3372h-320 (recommandé — autonome, plug-and-play)",
-                "Huawei E3372h-320 USB dongle (recommended — standalone, plug-and-play)"
+                "Clé USB Huawei E3372h-320 (plug-and-play, autonome)",
+                "Huawei E3372h-320 USB dongle (plug-and-play, standalone)"
+            )),
+            ("sim7600", t(
+                "Module SIM7600G-H HAT Waveshare (HAT Raspberry Pi, RNDIS)",
+                "SIM7600G-H Waveshare HAT module (Raspberry Pi HAT, RNDIS)"
             )),
             ("tethering", t(
                 "Partage de connexion USB depuis un smartphone (tethering)",
@@ -2064,21 +1844,26 @@ def _step8_notifications(cfg: dict, defaults: dict):
             marker = ""
             if key == "e3372h" and e3372h_detected:
                 marker = t(" ← détecté", " ← detected")
+            elif key == "sim7600" and sim7600_detected:
+                marker = t(" ← détecté", " ← detected")
             elif key == "tethering" and tethering_detected:
                 marker = t(" ← détecté", " ← detected")
             print(f"    {C.BOLD}{i}.{C.END} {label}{marker}")
         print()
 
         default_mode = default_lte.get("mode", "e3372h")
-        default_idx = 1 if default_mode == "e3372h" else 2
+        mode_to_idx = {"e3372h": 1, "sim7600": 2, "tethering": 3}
+        default_idx = mode_to_idx.get(default_mode, 1)
         # Auto-select based on what's detected
         if e3372h_detected:
             default_idx = 1
-        elif tethering_detected:
+        elif sim7600_detected:
             default_idx = 2
+        elif tethering_detected:
+            default_idx = 3
         method_idx = ask_int(
             t("Votre choix", "Your choice"),
-            default=default_idx, min_val=1, max_val=2
+            default=default_idx, min_val=1, max_val=3
         )
         lte_mode = lte_methods[method_idx - 1][0]
 
@@ -2386,6 +2171,215 @@ def _step8_notifications(cfg: dict, defaults: dict):
                 except Exception as e:
                     warn(t(f"Erreur ping: {e}", f"Ping error: {e}"))
 
+        elif lte_mode == "sim7600":
+            # --- SIM7600G-H HAT setup ---
+            print()
+            section(t("8b-bis. Configuration SIM7600G-H",
+                       "8b-bis. SIM7600G-H setup"))
+
+            info(t(
+                "Le SIM7600G-H est un HAT 4G/LTE pour Raspberry Pi.",
+                "The SIM7600G-H is a 4G/LTE HAT for Raspberry Pi."
+            ))
+            info(t(
+                "Il sera configuré en mode RNDIS (interface réseau USB).",
+                "It will be configured in RNDIS mode (USB network interface)."
+            ))
+            print()
+
+            # Check if pyserial is available
+            try:
+                import serial as _serial_check
+                has_serial = True
+            except ImportError:
+                has_serial = False
+                warn(t("pyserial non installé. Installation...",
+                       "pyserial not installed. Installing..."))
+                subprocess.run([
+                    "pip3", "install", "--break-system-packages", "pyserial"
+                ], capture_output=True, timeout=30)
+                try:
+                    import serial as _serial_check
+                    has_serial = True
+                except ImportError:
+                    fail(t("Impossible d'installer pyserial",
+                           "Cannot install pyserial"))
+
+            if has_serial:
+                # Find AT port
+                import serial
+                import glob
+
+                at_port = None
+                ports = sorted(glob.glob("/dev/ttyUSB*"))
+                for port in [p for p in ports if p.endswith("USB2")] + ports:
+                    try:
+                        ser = serial.Serial(port, 115200, timeout=2)
+                        ser.reset_input_buffer()
+                        ser.write(b"AT\r\n")
+                        import time as _t
+                        _t.sleep(1)
+                        resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                        ser.close()
+                        if "OK" in resp:
+                            at_port = port
+                            break
+                    except Exception:
+                        continue
+
+                if at_port:
+                    ok(t(f"Port AT trouvé : {at_port}", f"AT port found: {at_port}"))
+
+                    ser = serial.Serial(at_port, 115200, timeout=3)
+
+                    # Configure APN
+                    print()
+                    default_apn = default_lte.get("apn", "orange")
+                    apn = ask(
+                        t("Nom de l'APN de votre opérateur",
+                          "Your operator's APN name"),
+                        default=default_apn
+                    )
+
+                    info(t(f"Configuration de l'APN : {apn}",
+                           f"Setting APN: {apn}"))
+                    ser.write(f'AT+CGDCONT=1,"IP","{apn}"\r\n'.encode())
+                    _t.sleep(1)
+                    resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                    if "OK" in resp:
+                        ok(t("APN configuré", "APN configured"))
+                    else:
+                        warn(t(f"Réponse APN: {resp[:80]}", f"APN response: {resp[:80]}"))
+
+                    # Check SIM PIN
+                    ser.write(b"AT+CPIN?\r\n")
+                    _t.sleep(1)
+                    resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                    if "READY" in resp:
+                        ok(t("Carte SIM prête (pas de PIN)",
+                             "SIM card ready (no PIN)"))
+                    elif "SIM PIN" in resp:
+                        warn(t("La carte SIM nécessite un code PIN.",
+                               "SIM card requires a PIN code."))
+                        sim_pin = ask(t("Code PIN", "PIN code"))
+                        if sim_pin:
+                            ser.write(f'AT+CPIN="{sim_pin}"\r\n'.encode())
+                            _t.sleep(3)
+                            resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                            if "OK" in resp:
+                                ok(t("PIN accepté", "PIN accepted"))
+                            else:
+                                warn(t(f"Réponse PIN: {resp[:80]}", f"PIN response: {resp[:80]}"))
+
+                    # Check current USB mode
+                    ser.write(b"AT+CUSBPIDSWITCH?\r\n")
+                    _t.sleep(1)
+                    resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+
+                    if "9011" in resp:
+                        ok(t("Mode RNDIS déjà actif",
+                             "RNDIS mode already active"))
+                    else:
+                        info(t("Basculement en mode RNDIS...",
+                               "Switching to RNDIS mode..."))
+                        info(t("Le module va redémarrer (~30 secondes).",
+                               "The module will reboot (~30 seconds)."))
+                        ser.write(b"AT+CUSBPIDSWITCH=9011,1,1\r\n")
+                        _t.sleep(2)
+                        resp = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                        if "OK" in resp:
+                            ok(t("Commande RNDIS envoyée, redémarrage en cours...",
+                                 "RNDIS command sent, rebooting..."))
+                            ser.close()
+                            # Wait for reboot
+                            for i in range(30, 0, -5):
+                                info(f"  {i}s...")
+                                _t.sleep(5)
+
+                            # Verify usb0 appeared
+                            ip_result = subprocess.run(
+                                ["ip", "addr", "show"],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if "usb0" in ip_result.stdout and "192.168.225." in ip_result.stdout:
+                                ok(t("Interface usb0 active avec IP !",
+                                     "usb0 interface active with IP!"))
+                                lte_interface = "usb0"
+
+                                # Test connectivity
+                                ping_result = subprocess.run(
+                                    ["ping", "-c", "2", "-W", "3", "-I", "usb0", "8.8.8.8"],
+                                    capture_output=True, timeout=10
+                                )
+                                if ping_result.returncode == 0:
+                                    ok(t("Connexion 4G via SIM7600 OK !",
+                                         "4G connection via SIM7600 OK!"))
+
+                                    # Test ntfy via SIM7600
+                                    print()
+                                    test_sim = ask_yes_no(
+                                        t("Tester l'envoi d'une notification via SIM7600 ?",
+                                          "Test sending a notification via SIM7600?"),
+                                        default=True
+                                    )
+                                    while test_sim:
+                                        info(t("Envoi via SIM7600...", "Sending via SIM7600..."))
+                                        try:
+                                            sim_result = subprocess.run([
+                                                "curl", "-s", "--max-time", "15",
+                                                "--interface", "usb0",
+                                                "-H", "Title: reefbeat Backup -- Test SIM7600",
+                                                "-H", "Priority: default",
+                                                "-H", "Tags: satellite,zap",
+                                                "-d", "Test notification via SIM7600G-H RNDIS -- OK!",
+                                                f"{ntfy_server}/{ntfy_topic}"
+                                            ], capture_output=True, timeout=20)
+                                            if sim_result.returncode == 0:
+                                                ok(t("Notification envoyée via SIM7600 !",
+                                                     "Notification sent via SIM7600!"))
+                                                received = ask_yes_no(
+                                                    t("Avez-vous recu la notification ?",
+                                                      "Did you receive the notification?"),
+                                                    default=True
+                                                )
+                                                if received:
+                                                    ok(t("SIM7600 validé !", "SIM7600 validated!"))
+                                                    break
+                                                else:
+                                                    test_sim = ask_yes_no(
+                                                        t("Réessayer ?", "Retry?"), default=True)
+                                            else:
+                                                warn(t("Échec curl", "curl failed"))
+                                                test_sim = ask_yes_no(
+                                                    t("Réessayer ?", "Retry?"), default=True)
+                                        except Exception as e:
+                                            warn(f"Error: {e}")
+                                            test_sim = ask_yes_no(
+                                                t("Réessayer ?", "Retry?"), default=True)
+                                else:
+                                    warn(t("Pas de connectivité internet via SIM7600.",
+                                           "No internet connectivity via SIM7600."))
+                            else:
+                                warn(t("Interface usb0 non trouvée après reboot.",
+                                       "usb0 interface not found after reboot."))
+                                info(t("Essayez: python3 test_sim7600.py",
+                                       "Try: python3 test_sim7600.py"))
+                        else:
+                            warn(t(f"Échec RNDIS: {resp[:80]}",
+                                   f"RNDIS failed: {resp[:80]}"))
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+                else:
+                    warn(t("Aucun port AT trouvé pour le SIM7600.",
+                           "No AT port found for the SIM7600."))
+                    info(t("Vérifiez que le module est branché et allumé (LED NET clignotante).",
+                           "Check that the module is plugged in and on (NET LED blinking)."))
+
+            # Save APN in config
+            cfg.setdefault("sim7600", {})["apn"] = apn if has_serial and at_port else "orange"
+
         elif lte_mode == "tethering":
             # --- USB tethering from smartphone ---
             print()
@@ -2542,12 +2536,6 @@ def _step8_notifications(cfg: dict, defaults: dict):
                            "Cannot test connectivity."))
 
                 lte_interface = tether_iface
-
-                # Pin a high default-route metric so this tethering interface
-                # stays a backup behind Ethernet/Wi-Fi (otherwise dhcpcd may
-                # give usb0 metric 100 and capture all traffic on mains too).
-                print()
-                set_lte_backup_metric(tether_iface)
             else:
                 warn(t(
                     "Aucune interface tethering détectée.",
@@ -2562,11 +2550,6 @@ def _step8_notifications(cfg: dict, defaults: dict):
                     "The interface will be auto-detected when the service starts."
                 ))
 
-                # Pre-configure the metric on the expected interface (usb0) so
-                # it is already correct the moment the phone is plugged in.
-                print()
-                set_lte_backup_metric("usb0")
-
             input(f"\n  {C.BOLD}⏎{C.END} " + t(
                 "Appuyez sur Entrée pour continuer...",
                 "Press Enter to continue..."
@@ -2580,73 +2563,6 @@ def _step8_notifications(cfg: dict, defaults: dict):
         default=int(default_notif.get("cooldown_s", 300)),
         min_val=30, max_val=3600
     )
-
-    # --- Periodic connectivity checks ---
-    # Two independent health checks driven by the main loop:
-    #   - LTE link check: audits the 4G backup path so we know it works
-    #     before a real outage; alert goes out over the normal internet.
-    #   - Internet check: tests the normal WAN; if down, the alert is
-    #     forced out through the LTE modem.
-    print()
-    section(t("8d. Tests de connectivité périodiques",
-               "8d. Periodic connectivity checks"))
-
-    default_conn = default_notif.get("connectivity", {})
-
-    lte_check_interval_h = 0
-    if use_lte:
-        info(t(
-            "Test régulier de la liaison 4G pour vérifier que le failover",
-            "Periodically test the 4G link to confirm the failover path"
-        ))
-        info(t(
-            "fonctionnera en cas de coupure (0 = désactivé).",
-            "will work during an outage (0 = disabled)."
-        ))
-        print()
-        lte_check_interval_h = ask_int(
-            t("Intervalle du test 4G/LTE en heures (0 = désactivé)",
-              "4G/LTE check interval in hours (0 = disabled)"),
-            default=int(default_conn.get("lte_check_interval_h", 8)),
-            min_val=0, max_val=168
-        )
-    else:
-        info(t(
-            "Failover 4G désactivé : test 4G ignoré.",
-            "4G failover disabled: 4G check skipped."
-        ))
-
-    print()
-    info(t(
-        "Test régulier de la connexion internet normale ; si elle est",
-        "Periodically test the normal internet connection; if it is"
-    ))
-    info(t(
-        "coupée, une notification est envoyée via la 4G (0 = désactivé).",
-        "down, a notification is sent through 4G (0 = disabled)."
-    ))
-    print()
-    internet_check_interval_h = ask_int(
-        t("Intervalle du test internet en heures (0 = désactivé)",
-          "Internet check interval in hours (0 = disabled)"),
-        default=int(default_conn.get("internet_check_interval_h", 8)),
-        min_val=0, max_val=168
-    )
-
-    internet_check_host = default_conn.get("internet_check_host", "8.8.8.8")
-
-    # WAN interfaces to probe for the internet check, in priority order:
-    # wired (eth0) first, then the configured Wi-Fi interface. We bind the
-    # ping to each so the 4G modem (which may be the default route during a
-    # hotspot failover) never masks a real WAN outage. Honour an existing
-    # custom list if the user already set one.
-    wifi_iface = cfg.get("network", {}).get("interface", "wlan0")
-    default_ifaces = default_conn.get("internet_check_interfaces")
-    if not default_ifaces:
-        default_ifaces = ["eth0"]
-        if wifi_iface and wifi_iface not in default_ifaces:
-            default_ifaces.append(wifi_iface)
-    internet_check_interfaces = default_ifaces
 
     # --- LTE Gateway (NAT routing for ReefBeat cloud access) ---
     use_lte_gateway = False
@@ -2706,12 +2622,6 @@ def _step8_notifications(cfg: dict, defaults: dict):
             "mode": lte_mode if use_lte else "none",
             "interface": "auto",
             "check_url": "http://192.168.8.1/api/monitoring/status",
-        },
-        "connectivity": {
-            "lte_check_interval_h": lte_check_interval_h,
-            "internet_check_interval_h": internet_check_interval_h,
-            "internet_check_host": internet_check_host,
-            "internet_check_interfaces": internet_check_interfaces,
         },
         "cooldown_s": cooldown,
     }

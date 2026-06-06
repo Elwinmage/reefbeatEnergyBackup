@@ -12,12 +12,10 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
 - **Détection de coupure instantanée** via relais 230 V sur GPIO
 - **Dégradation progressive des pompes** — niveaux SoC calculés automatiquement à partir d'une cible d'autonomie
 - **Contrôle individuel** — chaque ReefWave / ReefRun / Skimmer reçoit sa propre intensité par niveau
-- **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome avec liste blanche MAC, réservations DHCP et remappage d'IP automatique des pompes
-- **Récupération robuste** — snapshots de config pompes (pré-coupure + référence horaire), restauration avec retry et CLI manuelle, health-check périodique
-- **Intégration Home Assistant** — auto-discovery MQTT (capteurs + chargeur si Victron + entités de test)
+- **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome
+- **Intégration Home Assistant** — auto-discovery MQTT (10 capteurs + chargeur si Victron)
 - **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
-- **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration, relève leurs MAC
-- **Test intégré** — palier de test pour vérifier le pilotage des pompes (vitesse + on/off) et coupure Wi-Fi temporisée, sans attendre une vraie coupure
+- **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
 - **Mise à jour automatique** — vérifie GitHub pour les nouvelles versions, entité `update` dans HA avec bouton "Installer"
 - **Redémarrage programmé** — reboot automatique du RPi via cron, annulé si sur batterie
 - **Bilingue** — interface FR/EN selon la locale système
@@ -31,12 +29,9 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
   - [Niveau 3 — Montage avancé](#niveau-3--montage-avancé)
   - [Augmentation d'autonomie](#augmentation-dautonomie)
 - [Configuration](#-configuration)
-- [Failover réseau](#-failover-réseau--flux-complet)
-- [Fiabilité & récupération](#-fiabilité--récupération)
 - [Home Assistant](#-home-assistant)
 - [Blueprint test de batterie](#-blueprint-test-automatique-de-batterie)
 - [Structure du projet](#-structure-du-projet)
-- [ReefWave et synchronisation cloud](#-important--reefwave-et-synchronisation-cloud)
 - [Dépannage](#-dépannage)
 
 ---
@@ -162,11 +157,9 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 
 > ⚠️ **Sécurité** : un **fusible 15 A** sur le pôle + de la batterie, juste après celle-ci, est obligatoire. Ce calibre est calé sur la capacité du câble 2,5 mm² (~16 A maximum) et offre une marge confortable face à une consommation pic typique de ~9 A (2× ReefWave 45 + ReefRun 12000 + Skimmer + Pi). En cas de court-circuit côté charges, c'est ce qui sauve la batterie (et la maison).
 
-> 🔧 **À FAIRE après le passage sur batterie — recalibrer les sondes de l'écumeur**
+> 🔧 **Problème sonde de godet du DC Skimmer** : alimenté par la batterie LiFePO₄ (26-27V au lieu du 24V d'origine), la **sonde de godet plein de l'écumeur devient peu fiable** — elle déclenche de fausses alarmes « godet plein » même après recalibration. C'est une limitation matérielle de la sonde à tension plus élevée.
 >
-> La tension d'alimentation sur batterie LiFePO4 24 V (≈ 24 à 28 V selon le SoC) **n'est pas la même** que celle du transformateur Red Sea d'origine. Comme la vitesse du moteur du skimmer dépend directement de la tension, le débit d'air et le niveau d'eau dans le godet changent une fois branché sur batterie.
->
-> **Après le branchement sur batterie, recalibrez les sondes / le réglage de l'écumeur** (point de fonctionnement et niveau de débordement) sur la nouvelle tension, sinon le godet peut déborder ou l'écumage devenir inefficace. Refaites la calibration à l'alimentation effectivement utilisée en fonctionnement normal (batterie en floating ou transfo, selon votre montage).
+> **Solution recommandée** : ajouter un [LM2596 DC-DC buck converter](https://www.amazon.fr/dp/B0FLYNNNW) (~2€) entre le bus batterie et le skimmer uniquement, réglé à 24,0V en sortie. Câblez-le sur le connecteur IP68 du skimmer (broches 1+3 uniquement). Refaites ensuite une calibration de la sonde via l'app ReefBeat. Les ReefWave et ReefRun restent branchés directement sur la batterie — ils fonctionnent très bien à 26-27V.
 
 #### ✅ Ce que vous obtenez
 
@@ -192,14 +185,13 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 |---|---|---|
 | ![INA226](docs/images/ina226.png) **Module INA226 0-36V/20A** (shunt 2 mΩ embarqué) | [Fasizi INA226 20A](https://www.amazon.fr/dp/B0B7MYYT2V) | ~14 € |
 | ![Pi](docs/images/rpi.png) **Raspberry Pi 3 B+** (ou plus récent) | [Pi 3 B+ 1 Go chez Kubii](https://www.kubii.com/fr/cartes-nano-ordinateurs/2119-raspberry-pi-3-modele-b-1-gb-kubii-5056561800318.html) | ~40 € |
-| Carte microSD 16 Go classe 10 + câble USB pour le Pi | — | ~15 € |
+| Carte microSD 16 Go classe 10 + alim USB du Pi | — | ~15 € |
+| Convertisseur DC-DC 24 V → 5 V 3 A pour le Pi | Step-down buck regulator | ~8 € |
 | ![Finder](docs/images/finder.png) **Relais Finder 40.61.8.230.4000** (bobine 230 V, 1 NO/NC) | [Finder 40.61](https://www.amazon.fr/dp/B003A611AE) | ~12 € |
 | ![Support Finder](docs/images/support.png) **Socle DIN Finder 95.95.3** | [Finder 95.95.3](https://www.amazon.fr/dp/B0018L99AC) | ~8 € |
 | Rail DIN 35 mm (10 cm) + petit boîtier électrique | — | ~15 € |
 
-**Budget additionnel : ~104 €** — **Budget cumulé niveau 2 : ~394 €**
-
-> 💡 **Alimentation du Pi** : la batterie Kepworth 24V 60Ah dispose d'un **port USB 5V intégré**, qui alimente directement le Raspberry Pi. Aucun convertisseur DC-DC 24V→5V n'est nécessaire — il suffit d'un câble USB entre le port 5V de la batterie et le Pi.
+**Budget additionnel : ~112 €** — **Budget cumulé niveau 2 : ~402 €**
 
 #### 🔌 Schéma de montage
 
@@ -216,18 +208,22 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
                      ┌─────────────┐   └────┬─────┘
                      │  Batterie   │        │ NO/NC
               ┌──────┤  LiFePO₄    │        │ contact
-              │      │ (port 5V    │        │
-              │      │  intégré)   │        │
-              │      └──┬───────┬──┘        │
-              │         │ 24V   │ 5V (USB)  │
-              │  [Shunt INA226] │           │
-              │         │       ▼           │
-              │         │  ┌────────────────┐
-              ├─────────┘  │  Raspberry Pi  │◄──────┘
-              │       I2C  │   GPIO 26      │ GPIO state
-              │       SDA  │   GPIO 2 SDA   │
-              │       SCL  │   GPIO 3 SCL   │
-              │            └────────────────┘
+              │      └──────┬──────┘        │
+              │             │ 24V           │
+              │      [Shunt INA226]         │
+              │             │               │
+              │             ▼               │
+              │    ┌────────────────┐       │
+              │    │ DC-DC 24V→5V   │       │
+              │    └────────┬───────┘       │
+              │             │ 5V            │
+              │             ▼               │
+              │    ┌────────────────┐       │
+              ├────│  Raspberry Pi  │◄──────┘
+              │I2C │   GPIO 26      │ GPIO state
+              │SDA │   GPIO 2 SDA   │
+              │SCL │   GPIO 3 SCL   │
+              │    └────────────────┘
               │
               ▼
        ReefRun / ReefWave / DC Skimmer
@@ -241,21 +237,17 @@ Le module INA226 doit être **en série sur le pôle + de la batterie**, entre l
 
 ```
 Batterie (+) ──► [IN+ shunt INA226 IN−] ──► Bus + 24V ─┬─► Chargeur (sortie)
+                                                        ├─► DC-DC vers Pi
                                                         ├─► ReefRun
                                                         ├─► ReefWave
                                                         └─► DC Skimmer
 
 Batterie (−) ──────────────────────────► Bus − (commun)
-
-(Le Raspberry Pi est alimenté séparément par le port USB 5V intégré de la
- batterie, en aval du shunt — voir la note sur le coulomb counting ci-dessous.)
 ```
 
 Le shunt voit donc :
 - **courant positif** = la batterie débite (décharge ou alimentation des charges)
 - **courant négatif** = la batterie reçoit (charge depuis le Victron)
-
-> ⚠️ **Conso du Pi non mesurée** : comme le Raspberry Pi est alimenté par le port USB 5V intégré de la batterie (en aval du shunt INA226), sa consommation (~0,5–1 A en 5V, soit ~0,1–0,2 A ramené au 24V) **n'est pas comptabilisée** par le coulomb counting. L'autonomie réelle sera donc légèrement inférieure à l'estimation. Si vous voulez une mesure exacte, alimentez le Pi via un convertisseur DC-DC 24V→5V branché **en aval du shunt** (sur le bus 24V) plutôt que sur le port 5V de la batterie.
 
 **Câblage du relais de détection de coupure** :
 
@@ -301,9 +293,7 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 |---|---|---|
 | 🔌 **Chargeur Victron BLE** | Chargeur silencieux + état chargeur dans HA | ✅ Oui |
 | ⚡ **Disjoncteur connecté** | Tests de décharge automatisés depuis HA | ✅ Oui |
-| 📶 **Modem USB 4G LTE** | Notifications même quand le Wi-Fi est coupé | ✅ Oui |
-
-> 💡 **Alternative au modem USB** : vous pouvez utiliser un smartphone branché en USB (tethering) à la place de l'E3372h. Voir la section [tethering](#alternative-tethering-usb) ci-dessous.
+| 📶 **Module 4G LTE** | Notifications + accès cloud ReefBeat quand le Wi-Fi est coupé | ✅ Oui |
 
 #### 📦 Matériel additionnel (en plus du niveau 2)
 
@@ -311,9 +301,17 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 |---|---|---|
 | ![Chargeur BLE](docs/images/chargeur.png) **Chargeur Victron Blue Smart IP22 24/12** *(remplace le chargeur Kepworth fourni — silencieux + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Disjoncteur](docs/images/disjoncteur.png) **Disjoncteur connecté Wi-Fi 16 A avec compteur** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
-| ![Huawei E3372h](docs/images/huawei-e3372h-320.png) **Modem USB 4G LTE Huawei E3372h-320** | [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) | ~40 € |
+| **SIM7600G-H 4G HAT** *(recommandé — intégré sur le Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
+| **Module DC-DC 24V→5V 5A** *(nécessaire si SIM7600 HAT — l'USB du RPi seul ne peut pas alimenter les deux)* | [DC-DC Buck 9-36V vers 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2,50 € |
 
-**Budget additionnel maximal : ~225 €** (les trois) — **Budget cumulé niveau 3 : ~627 €**
+*Ou en alternative au SIM7600 :*
+
+| Composant | Modèle suggéré | Prix indicatif |
+|---|---|---|
+| ![Huawei E3372h](docs/images/huawei-e3372h-320.png) **Modem USB 4G Huawei E3372h-320** *(plug-and-play, pas de puissance supplémentaire)* | [Huawei E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) | ~40 € |
+| **Tethering USB depuis un smartphone** *(pas de matériel supplémentaire, téléphone alimenté via USB du RPi)* | — | 0 € |
+
+**Budget additionnel maximal : ~262 €** (les trois avec SIM7600) — **Budget cumulé niveau 3 : ~664 €**
 
 #### 🔌 Schéma de montage
 
@@ -373,62 +371,50 @@ Permet de remonter dans HA :
 
 Configuration : récupérer la **clé de chiffrement** depuis l'app VictronConnect (Settings → Product Info → Instant Readout → "Show"), à entrer dans le wizard de configuration.
 
-**Modem USB 4G LTE Huawei E3372h-320** :
+**SIM7600G-H 4G HAT** *(recommandé)* :
+
+Le [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) se branche directement sur le connecteur GPIO du Raspberry Pi. LTE Cat4 150 Mbps, bandes mondiales, avec positionnement GNSS.
+
+Le wizard le configure automatiquement en **mode RNDIS** — le module apparaît comme une interface réseau USB (`usb0`) avec DHCP. Pas de PPP, QMI, ou commandes AT nécessaires pour la data après la configuration initiale.
+
+**Configuration initiale** (gérée par le wizard) :
+1. Configurer l'APN : `AT+CGDCONT=1,"IP","votre_apn"`
+2. Basculer en RNDIS : `AT+CUSBPIDSWITCH=9011,1,1`
+3. Le module redémarre → `usb0` apparaît avec une IP via DHCP
+
+Après la configuration initiale, le module démarre automatiquement en RNDIS à chaque démarrage du RPi — totalement autonome.
+
+> ⚡ **Note alimentation** : le port USB du RPi peut alimenter le Pi seul (~2,1A), mais **pas le Pi et le SIM7600 HAT ensemble**. Avec le SIM7600, alimentez le RPi via un [module DC-DC 24V→5V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) (~2,50€) connecté au bus batterie, en alimentant les pins GPIO 2 (5V) et 6 (GND) du RPi — pas le port USB-C.
+
+**Test :** `python3 test_sim7600.py` lance un diagnostic complet (série, SIM, signal, réseau, connectivité).
+
+**Monitoring LTE** : toutes les 10 minutes (configurable), le système interroge le modem via commandes AT et publie dans HA : force du signal (dBm), qualité, opérateur, type de réseau (4G/3G/2G), état SIM, modèle, firmware, IMEI, IP et état de connectivité.
+
+##### Alternative Huawei E3372h-320
 
 <p align="center">
   <img src="docs/images/huawei-e3372h-320.png" alt="Huawei E3372h-320" width="300">
 </p>
 
-LTE Cat4 150 Mbps, bandes 1/3/7/8/20 (800/900/1800/2100/2600 MHz), mode HiLink plug-and-play. Il suffit de le brancher sur un port USB du Pi avec une carte SIM active — il crée une interface Ethernet virtuelle (`eth1`), aucun pilote ni configuration PPP nécessaire.
+L'[E3372h-320](https://www.amazon.fr/HUAWEI-51071SMK-Huawei-E3372h-320-LTE-Stick/dp/B085RDTZMP) (~40€) est une option plus simple plug-and-play. Il suffit de le brancher sur un port USB du Pi avec une carte SIM active — il crée une interface Ethernet virtuelle (`eth1`), aucune configuration nécessaire. Interface web HiLink sur `http://192.168.8.1`.
 
-Quand le Wi-Fi et le routeur sont tous les deux down, le notifier détecte automatiquement le modem, vérifie la connectivité cellulaire, et route les notifications ntfy.sh à travers la 4G. Interface web HiLink accessible sur `http://192.168.8.1` pour le monitoring signal/état.
-
-> 🔑 **Code PIN SIM** : pendant la configuration, le wizard détecte si la SIM demande un PIN, le saisit, et propose de **le désactiver définitivement**. C'est fortement recommandé — sans ça, le modem ne peut pas se reconnecter automatiquement après un cycle d'alimentation.
-
-**Passerelle internet 4G pour les ReefBeat** : quand le hotspot RPi est actif et cette option activée, le RPi fait office de routeur NAT — il redirige le trafic internet des ReefBeat (connectés au hotspot) à travers le modem 4G. Résultat : **l'app mobile Red Sea continue de fonctionner** pendant une coupure, car les contrôleurs ReefBeat accèdent toujours aux serveurs cloud Red Sea.
+> 🔑 **Code PIN SIM** : pendant la configuration, le wizard détecte si la SIM demande un PIN, le saisit, et propose de **le désactiver définitivement**. Fortement recommandé — sans ça, le modem ne peut pas se reconnecter après un cycle d'alimentation.
 
 ##### Alternative tethering USB
 
-Si vous ne souhaitez pas acheter un modem USB, vous pouvez utiliser un **smartphone branché en USB** comme modem 4G/5G. Activez le partage de connexion USB sur le téléphone (Paramètres → Réseau → Point d'accès → Partage USB), branchez-le au RPi, et le wizard le détectera.
+Si vous ne souhaitez pas acheter un modem, vous pouvez utiliser un **smartphone branché en USB** comme modem 4G/5G. Activez le partage de connexion USB sur le téléphone (Paramètres → Réseau → Point d'accès → Partage USB), branchez-le au RPi. Le téléphone est alimenté via USB par le RPi (qui est sur batterie), il reste donc chargé pendant la coupure.
 
-**Avantages** : pas de matériel supplémentaire, utilise votre téléphone et forfait existants. Le téléphone est alimenté via USB par le RPi (qui est sur batterie), il reste donc chargé pendant la coupure.
-
-**Inconvénients** : le partage USB peut devoir être réactivé après un redémarrage du téléphone, et le téléphone doit rester physiquement connecté. L'E3372h est totalement autonome et toujours prêt.
-
-> ⚠️ **Limitation importante — perte du tethering au reboot du RPi** : la plupart des smartphones (Android comme iPhone) **désactivent automatiquement le partage de connexion USB dès que le lien USB est coupé ou réinitialisé**. Or un redémarrage du RPi réinitialise le bus USB : au retour, le téléphone a coupé le partage et l'interface `usb0` ne réapparaît pas. C'est un comportement volontaire du système d'exploitation du téléphone, pas un bug du projet — et il ne peut pas être contourné depuis le RPi.
->
-> Pour diagnostiquer après un reboot (sans toucher au téléphone) :
-> ```bash
-> ip link show        # usb0 apparaît-il ?
-> ip addr show usb0   # a-t-il une IP ?
-> ```
-> - `usb0` **absent** → le téléphone a coupé le partage. Seules solutions : réactiver manuellement le partage USB sur le téléphone, utiliser une app de réactivation automatique (Tasker / « USB Tether Auto » sur Android, fiabilité variable selon le modèle), ou passer sur la clé E3372h.
-> - `usb0` **présent mais sans IP** → le téléphone tient le partage mais le RPi n'a pas reconfiguré l'interface ; ce cas se règle côté RPi (relance de `dhcpcd`/`dhclient` sur `usb0`).
->
-> 🛠️ **Solution Android — réactivation automatique du tethering (cas `usb0` absent)**
->
-> La plupart des Android permettent de forcer le **partage de connexion USB** comme mode USB par défaut, via les **options pour développeurs**. Ainsi, le téléphone réactive automatiquement le tethering dès que le RPi se reconnecte (après un reboot, par exemple), sans intervention manuelle :
->
-> 1. **Activer les options pour développeurs** : *Paramètres → À propos du téléphone* → tapez **7 fois** sur **Numéro de build** (un message « Vous êtes maintenant développeur » apparaît).
-> 2. Ouvrez *Paramètres → Système → Options pour développeurs* (l'emplacement exact varie selon le constructeur).
-> 3. Cherchez **Configuration USB par défaut** et sélectionnez **Partage de connexion par USB** (selon la surcouche : « USB tethering », « Connexion USB », etc.).
-> 4. Optionnel : si présent, activez aussi **Accélération matérielle du tethering**.
-> 5. Laissez le téléphone branché au RPi. Au prochain reboot du RPi, le tethering doit revenir tout seul.
->
-> ⚠️ Le libellé et l'emplacement de ces réglages **varient selon la version d'Android et le constructeur** (Samsung/One UI, Pixel, Xiaomi…). Sur certaines surcouches, le réglage ne « tient » pas parfaitement après une mise à jour système — testez en faisant un vrai reboot du RPi et en vérifiant avec `ip addr show usb0`. Si ça ne tient pas sur votre modèle, la clé E3372h reste la solution la plus sûre.
->
-> 🔑 **Recommandation** : pour un secours **fiable et non surveillé**, préférez la clé **Huawei E3372h**. En mode HiLink, elle est totalement autonome, se réinitialise seule et survit sans problème aux redémarrages du RPi. Le tethering smartphone reste une solution de dépannage acceptable uniquement si vous pouvez réactiver le partage manuellement, ou si le RPi ne redémarre jamais sans surveillance.
-
-> ℹ️ **Priorité de routage automatique** : lors de la configuration, le wizard force une **métrique haute (700)** sur l'interface tethering (`usb0`) dans `/etc/dhcpcd.conf`. Sans ça, dhcpcd peut donner à `usb0` une métrique basse (100) et faire passer **tout** le trafic du RPi par la 4G, même sur secteur — ce qui consomme inutilement votre forfait data. Avec la métrique 700, la 4G reste un secours derrière l'Ethernet (`eth0`) et le Wi-Fi (`wlan0`), et n'est utilisée que si les deux tombent. Le réglage est appliqué à chaud *et* persisté pour les prochains branchements.
+**Passerelle internet 4G pour les ReefBeat** *(les trois options LTE)* : quand le hotspot RPi est actif, le RPi fait office de routeur NAT — il redirige le trafic internet des ReefBeat à travers la 4G. **L'app mobile Red Sea continue de fonctionner** pendant une coupure.
 
 #### ✅ Ce que vous obtenez
 
 - **Contrôle distant du secteur** vers la batterie depuis HA
 - **Tests de décharge programmés** : voir la [section blueprint](#-blueprint-test-automatique-de-batterie)
 - **Visibilité complète** sur le chargeur (mode, courant, erreurs)
-- **Mesure de la consommation totale** en kWh via le disjoncteur Tongou (utile pour le calcul d'autonomie réelle)
+- **Mesure de la consommation totale** en kWh via le disjoncteur Tongou
 - **Notifications même quand tout est coupé** via 4G LTE
-- **L'app mobile Red Sea continue de fonctionner** pendant les coupures (la passerelle 4G route le trafic ReefBeat vers le cloud)
+- **L'app mobile Red Sea continue de fonctionner** pendant les coupures (passerelle 4G)
+- **Télémétrie LTE dans HA** — signal, opérateur, type réseau, état SIM, IMEI
 
 ---
 
@@ -537,27 +523,10 @@ Coupure détectée (relais GPIO, instantané)
     │
     └── Étape 3 : création du hotspot miroir (même SSID + mot de passe sur wlan0)
             │
-            ├── Liste blanche MAC : seules les pompes pilotées (MAC relevées
-            │    en configuration via /wifi) peuvent s'associer. Sans ça, tous
-            │    les appareils Wi-Fi de la maison se rabattent sur le hotspot,
-            │    saturent la puce du Pi et empêchent les pompes d'obtenir une IP.
-            │
             ├── Les ReefBeat se reconnectent auto au hotspot du RPi
             │    (ils connaissent déjà le SSID/mot de passe)
             │
-            ├── Adressage : sur le hotspot, les pompes sont sur 192.168.4.0/24
-            │    (≠ du LAN 192.168.0.0/24). Chaque pompe garde son dernier octet
-            │    (192.168.0.83 → 192.168.4.83) via une réservation DHCP par MAC.
-            │    Le code remappe les IP automatiquement (par MAC, repli sur
-            │    substitution d'octet) — pings et commandes suivent les pompes.
-            │
             ├── Le RPi pilote les pompes en local via API HTTP
-            │
-            ├── Attente des pompes : certaines (RSRUN) ne rejoignent qu'après
-            │    leur watchdog Wi-Fi (~15 min). Le failover patiente jusqu'à
-            │    900s et sort dès que TOUTES sont là, en loggant la progression
-            │    (n/total). Le palier d'éco est appliqué immédiatement aux
-            │    pompes déjà joignables, sans attendre les retardataires.
             │
             ├── Si modem 4G (E3372h ou tethering USB) disponible :
             │       │
@@ -575,73 +544,24 @@ Coupure détectée (relais GPIO, instantané)
     │
     ├── SoC batterie → ajuste l'intensité des pompes (eco → survival → critical)
     ├── Disponibilité Wi-Fi → si le Wi-Fi maison réapparaît, rebascule depuis le hotspot
-    ├── Connectivité 4G → route les notifications et le trafic ReefBeat
-    └── Santé des pompes (health-check) → en mode hotspot, vérifie toutes les
-         60s qui répond, re-remappe les IP, et ré-applique le palier d'éco aux
-         pompes qui viennent de rejoindre (rattrapage des retardataires)
+    └── Connectivité 4G → route les notifications et le trafic ReefBeat
 
 
 Retour du courant (relais GPIO, instantané)
     │
     ├── Hotspot désactivé (si actif), règles NAT nettoyées
     │
-    ├── IP des pompes restaurées à leurs adresses LAN d'origine (192.168.0.x)
-    │
     ├── Le RPi repasse sur Ethernet (eth0) quand les switchs reviennent
     │    (automatique — Linux priorise eth0 sur wlan0)
     │
     ├── Les ReefBeat se reconnectent au Wi-Fi du routeur
     │
-    ├── Intensité des pompes restaurée à leur config d'origine (depuis le
-    │    snapshot disque). Au retour du courant les pompes peuvent mettre du
-    │    temps à rejoindre le Wi-Fi : la restauration retente en arrière-plan
-    │    jusqu'à ce que toutes soient restaurées (et peut être relancée à la
-    │    main via `restore_pumps.py`).
+    ├── Intensité des pompes restaurée à 100%
     │
     ├── Buffer MQTT rejoué → HA reçoit la courbe de décharge complète
     │
     └── Notification ntfy : "Courant rétabli après Xh, SoC Y%"
 ```
-
----
-
-## 🛡️ Fiabilité & récupération
-
-Plusieurs mécanismes garantissent que le système reste cohérent même en cas d'imprévu (reboot du Pi en pleine coupure, pompe injoignable au mauvais moment, device lent à rejoindre).
-
-### Snapshots de configuration des pompes
-
-Avant de réduire une pompe, sa configuration d'origine (planning RSRUN, programme de vagues RSWAVE) est sauvegardée sur disque dans `/var/lib/reefbeat-energy-backup/snapshots/`. Au retour du courant, cette config est ré-appliquée exactement, puis le snapshot est supprimé. Un snapshot qui subsiste signifie « restauration encore en attente » — il survit donc à un reboot du Pi.
-
-En complément, un **snapshot de référence** est capturé périodiquement (par défaut toutes les heures) en fonctionnement nominal, dans `/var/lib/reefbeat-energy-backup/reference/`. Ces références ne sont jamais supprimées et servent de filet : si la capture au début d'une coupure échoue (pompe déjà injoignable), le système retombe sur la dernière référence connue.
-
-### Restauration robuste avec retry
-
-Au retour du courant, les pompes Red Sea peuvent mettre du temps à rejoindre le Wi-Fi. La restauration fait une première passe immédiate, puis **retente en arrière-plan** (par défaut toutes les 30s, jusqu'à 40 tentatives) tant que des snapshots subsistent.
-
-Si la restauration automatique échoue (pompes hors ligne trop longtemps), elle peut être relancée à la main :
-
-```bash
-python3 restore_pumps.py            # relance la restauration depuis les snapshots
-python3 restore_pumps.py --list     # liste les pompes en attente, sans agir
-python3 restore_pumps.py --retries 20 --interval 20
-```
-
-### Health-check périodique
-
-Le système sonde régulièrement chaque pompe et trace une ligne de synthèse dans les logs, indiquant qui répond, dans quel mode (`auto`/`manual`/`off`) et **depuis quel mode réseau** (client / rejoin / hotspot) :
-
-```
-[HEALTH] ✅ 4/4 devices reachable | net=hotspot | battery | RSWAVE45-...=auto, ...
-```
-
-La cadence s'adapte : 5 min sur secteur, 15 min sur batterie (économie d'énergie), **60s en mode hotspot** (pour rattraper rapidement une pompe lente à rejoindre). En mode batterie, une pompe qui passe de injoignable à joignable se voit ré-appliquer automatiquement le palier d'éco courant.
-
-### Calcul du SoC robuste
-
-Le coulomb counting borne son pas d'intégration : un cycle de boucle anormalement long (lecture BLE qui timeoute, charge système) ne peut plus provoquer un saut artificiel du SoC. Sur batterie, les lectures BLE bloquantes vers le chargeur (injoignable de toute façon) sont sautées, et la télémétrie chargeur figée est purgée.
-
-> ⚠️ **Conso du Pi non mesurée** : le Pi étant alimenté en aval du shunt INA226 (port 5V de la batterie), sa consommation n'est pas comptée dans le coulomb counting. L'autonomie réelle est donc légèrement inférieure à l'estimation. Voir la note dans le schéma niveau 2.
 
 ---
 
@@ -663,9 +583,6 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 | `sensor.reef_battery_outage_duration` | Durée coupure courante (min) |
 | `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
 | `sensor.reef_battery_monitor_source` | ina226 |
-| `sensor.reef_battery_energie_dechargee` | Énergie cumulée sortie de batterie (kWh) — *Energy dashboard* |
-| `sensor.reef_battery_energie_chargee` | Énergie cumulée entrée en batterie (kWh) — *Energy dashboard* |
-| `sensor.reef_battery_energie_consommee` | Conso totale système depuis l'allumage (kWh) — *Energy dashboard* |
 
 **Si Victron BLE est configuré** (niveau 3) :
 
@@ -675,211 +592,6 @@ Tous les capteurs apparaissent automatiquement dans HA après publication des co
 | `sensor.reef_battery_charger_current` | Courant de sortie chargeur (A) |
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
-
-### Entités de contrôle (test)
-
-Ces entités servent à tester le système sans attendre une vraie coupure :
-
-| Entité | Description |
-|---|---|
-| `switch.reef_battery_test_plan` | Applique le palier de test aux pompes (vitesse réduite + extinction d'une pompe via `per_device`), sans coupure. OFF = restauration. |
-| `button.reef_battery_test_pumps` | Lance un test des commandes pompes à la demande : applique le palier de test, le maintient quelques secondes, puis restaure automatiquement. |
-| `number.reef_battery_wifi_cut_min` | Coupe le Wi-Fi du Pi pendant N minutes (0 = aucune) pour observer le failover réseau. Le lien est toujours rétabli automatiquement. |
-
-Ces entités nécessitent `test_level` (et `test_hold_seconds`) configurés dans `config.json`.
-
-### Tableau de bord Énergie & Power Flow Card
-
-Les trois compteurs `energie_dechargee`, `energie_chargee` et `energie_consommee` ont été déclarés avec `device_class: energy` et `state_class: total_increasing` : ils sont **directement éligibles** dans le tableau de bord Énergie de Home Assistant (*Paramètres → Tableaux de bord → Énergie*) :
-
-- **Stockage batterie** → ajoutez la paire `energie_chargee` (entrée) / `energie_dechargee` (sortie).
-- **Consommation individuelle** → ajoutez `energie_consommee` pour suivre la conso quotidienne / hebdo / mensuelle du système.
-
-Les compteurs sont persistés sur disque toutes les 60 s, donc un redémarrage ne remet pas les totaux à zéro.
-
-#### Power Flow Card Plus
-
-Pour un visuel temps réel du flux d'énergie (secteur ↔ batterie ↔ aquarium), la carte communautaire [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) (installable via HACS) fait très bien le travail :
-
-![Power Flow Card](docs/images/power-flow-card.png)
-
-Cette visualisation nécessite **deux cartes communautaires** à installer via HACS → Frontend :
-
-1. [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus) — la carte de flux elle-même.
-2. [`config-template-card`](https://github.com/iantrich/config-template-card) — un wrapper qui permet d'injecter des valeurs dynamiques (ici, des icônes) dans la config de la carte enfant. Indispensable parce que `power-flow-card-plus` ne supporte qu'une icône statique par nœud `individual` ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)).
-
-Les deux RSWave sont d'abord agrégés (marche avant + marche arrière) via deux template sensors, et les deux RSRun sont enveloppés en `sensor` pour pouvoir les afficher avec une unité `%` propre :
-
-```yaml
-# configuration.yaml — adapter le préfixe à votre mqtt.device_name et
-# les IDs RSWave / RSRun
-template:
-  - sensor:
-      # RSWave Gyre 1 — combine les intensités marche avant/arrière en
-      # une seule valeur (state = max) et expose la direction comme
-      # attribut (affiché en sous-info de la carte).
-      - name: "RSWave Gyre 1 Vitesse"
-        unique_id: rswave_gyre1_speed
-        unit_of_measurement: "%"
-        state: >
-          {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
-          {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
-          {{ [f, r] | max | round(0) }}
-        attributes:
-          direction: >
-            {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
-            {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
-            {% if f > 0 %}→ av{% elif r > 0 %}← ar{% else %}■{% endif %}
-
-      - name: "RSWave Gyre 2 Vitesse"
-        unique_id: rswave_gyre2_speed
-        unit_of_measurement: "%"
-        state: >
-          {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
-          {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
-          {{ [f, r] | max | round(0) }}
-        attributes:
-          direction: >
-            {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
-            {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
-            {% if f > 0 %}→ av{% elif r > 0 %}← ar{% else %}■{% endif %}
-
-      # RSRun — wrappers des entités `number` en `sensor` pour avoir
-      # des entity_id parlants côté carte. Pas besoin d'icône ici :
-      # config-template-card l'injectera dynamiquement dans la carte.
-      - name: "Pompe Retour Vitesse"
-        unique_id: rsrun_return_speed
-        unit_of_measurement: "%"
-        state: "{{ states('number.rsrun_<your_pump_id>_pump_1_vitesse') }}"
-
-      - name: "Écumeur Vitesse"
-        unique_id: rsrun_skimmer_speed
-        unit_of_measurement: "%"
-        state: "{{ states('number.rsrun_<your_pump_id>_pump_2_vitesse') }}"
-```
-
-Configuration complète de la carte, avec icônes `redsea:*` dynamiques pilotées par `config-template-card` :
-
-```yaml
-type: custom:config-template-card
-variables:
-  GYRE1_ICON: |
-    (() => {
-      const v = Math.max(
-        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_avant'].state) || 0,
-        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_arriere'].state) || 0
-      );
-      if (v <= 0) return 'redsea:gyre-off';
-      if (v < 35) return 'redsea:gyre-min';
-      if (v < 70) return 'redsea:gyre-med';
-      return 'redsea:gyre-max';
-    })()
-  GYRE2_ICON: |
-    (() => {
-      const v = Math.max(
-        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_avant'].state) || 0,
-        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_arriere'].state) || 0
-      );
-      if (v <= 0) return 'redsea:gyre-off';
-      if (v < 35) return 'redsea:gyre-min';
-      if (v < 70) return 'redsea:gyre-med';
-      return 'redsea:gyre-max';
-    })()
-  PUMP_ICON: |
-    parseFloat(states['number.rsrun_<your_pump_id>_pump_1_vitesse'].state) > 0
-      ? 'redsea:pump-on' : 'redsea:pump-off'
-  SKIMMER_ICON: |
-    parseFloat(states['number.rsrun_<your_pump_id>_pump_2_vitesse'].state) > 0
-      ? 'redsea:skimmer-on' : 'redsea:skimmer-off'
-# Liste des entités à surveiller : config-template-card réévalue les
-# variables ${...} dès qu'une d'entre elles change d'état, ce qui
-# garde le rendu efficace même avec plusieurs variables.
-entities:
-  - sensor.rswave45_<your_wave1_id>_intensite_marche_avant
-  - sensor.rswave45_<your_wave1_id>_intensite_marche_arriere
-  - sensor.rswave45_<your_wave2_id>_intensite_marche_avant
-  - sensor.rswave45_<your_wave2_id>_intensite_marche_arriere
-  - number.rsrun_<your_pump_id>_pump_1_vitesse
-  - number.rsrun_<your_pump_id>_pump_2_vitesse
-card:
-  type: custom:power-flow-card-plus
-  title: Reef Battery Backup
-  entities:
-    battery:
-      entity: sensor.reef_battery_backup_puissance
-      state_of_charge: sensor.reef_battery_backup_soc_batterie
-      name: Batterie LiFePO4
-      icon: mdi:battery
-      # Convention interne : power > 0 = décharge. La carte attend
-      # l'inverse (power > 0 = charge), d'où invert_state.
-      invert_state: true
-      color:
-        consumption: "#4caf50"
-        production: "#ff9800"
-      display_state: two_way
-      show_state_of_charge: true
-      state_of_charge_unit: "%"
-      state_of_charge_decimals: 0
-    home:
-      entity: sensor.reef_battery_backup_energie_consommee
-      name: Aquarium
-      icon: mdi:fishbowl-outline
-      color_value: true
-    grid:
-      entity: sensor.reef_battery_backup_tension_chargeur
-      name: Secteur
-      icon: mdi:transmission-tower
-      color_value: true
-    individual:
-      - entity: sensor.rswave_gyre_1_vitesse
-        name: Gyre 1
-        color: "#00bcd4"
-        icon: ${GYRE1_ICON}
-        unit_of_measurement: "%"
-        display_zero: true
-        secondary_info:
-          template: |
-            {{ state_attr('sensor.rswave_gyre_1_vitesse', 'direction') }}
-      - entity: sensor.rswave_gyre_2_vitesse
-        name: Gyre 2
-        icon: ${GYRE2_ICON}
-        color: "#00bcd4"
-        unit_of_measurement: "%"
-        display_zero: true
-        secondary_info:
-          template: |
-            {{ state_attr('sensor.rswave_gyre_2_vitesse', 'direction') }}
-      - entity: sensor.pompe_retour_vitesse
-        name: Pompe retour
-        icon: ${PUMP_ICON}
-        color: "#2196f3"
-        unit_of_measurement: "%"
-        display_zero: true
-      - entity: sensor.ecumeur_vitesse
-        name: Écumeur
-        icon: ${SKIMMER_ICON}
-        color: "#ff2030"
-        unit_of_measurement: "%"
-        display_zero: true
-  clickable_entities: true
-  display_zero_lines:
-    mode: show
-    transparency: 50
-  use_new_flow_rate_model: true
-  min_flow_rate: 0.75
-  max_flow_rate: 6
-  transparency_zero_lines: 0
-  kilo_threshold: 1000
-  base_decimals: 0
-  kilo_decimals: 2
-```
-
-Les seuils 35 % / 70 % pour le passage entre `gyre-min` / `gyre-med` / `gyre-max` sont à ajuster selon vos plages d'utilisation habituelles.
-
-> **Notes**
-> - Adapter le préfixe `reef_battery_backup_*` à votre `mqtt.device_name`, ainsi que les IDs des RSWave (`rswave45_XXXXXXX`) et RSRun (`rsrun_XXXXXXXXXX`).
-> - Les icônes `redsea:*` (gyre, pump, skimmer) proviennent du jeu d'icônes installé automatiquement par l'intégration [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component).
-> - Le nœud `grid` utilise ici `tension_chargeur` (V) comme indicateur de présence du secteur — c'est volontaire, on visualise *si* le secteur est là, pas combien de watts il fournit. Pour un vrai diagramme de flux énergétique en watts, vous pouvez créer des template sensors `Reef Backup Puissance Secteur` (= V × A du chargeur) et `Reef Backup Puissance Charge` (= sortie chargeur − puissance batterie signée) et les utiliser à la place.
 
 ### Buffer MQTT
 
@@ -924,17 +636,9 @@ Présence "user_y" détectée à la maison ?
               └─── Accept
                       │
                       ▼
-              (Option) Test des commandes pompes : applique brièvement le
-              palier de test (vitesse réduite + on/off), vérifie que les
-              pompes réagissent, puis restaure — sans coupure
-                      │
-                      ▼
               Disjoncteur OFF
               SoC / tension / puissance initiaux sauvegardés
               Calcul du forecast (puissance × durée / capacité)
-                      │
-                      ▼
-              (Option) Coupure Wi-Fi pendant N min pour exercer le failover
                       │
                       ▼
               Attendre 40 min, OU abort immédiat si tension < seuil
@@ -1002,7 +706,6 @@ monitor.py                          Backend INA226 + auxiliaire Victron BLE
 outage.py                           Détection de coupure (relais GPIO)
 hotspot.py                          Failover réseau 3 niveaux
 controller.py                       Contrôle pompes + orchestration coupure
-restore_pumps.py                    Restauration manuelle des pompes (CLI)
 mqtt_buffer.py                      Buffer MQTT avec replay
 power_estimation.py                 Tables de conso + builder de scénario
 ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
@@ -1012,10 +715,6 @@ docs/
   images/                           Images des composants pour la doc
 blueprints/
   reef_battery_test.yaml            Blueprint HA de test de batterie
-/var/lib/reefbeat-energy-backup/
-  snapshots/                        Config pompes pré-coupure (restauration)
-  reference/                        Snapshots de référence horaires (filet)
-  mqtt/                             Buffer MQTT (replay)
 ```
 
 ---
@@ -1060,28 +759,6 @@ Cependant, le **cloud Red Sea et l'app mobile ne sont pas informés** de ce chan
 
 > 💡 Cette limitation ne concerne que les ReefWave. Les ReefRun (pompes de remontée, skimmers) sont contrôlés localement et restent synchronisés avec l'app en permanence.
 
-### Compatibilité firmware ReefWave (ESP8266 vs ESP32)
-
-Il existe deux générations de ReefWave, et reefbeat⚡Backup gère les deux :
-
-- **ESP32** (firmware récent, ex. `0.10.0`) — beaucoup de mémoire, accepte un programme complet en une seule requête.
-- **ESP8266** (firmware plus ancien, ex. `3.0.0`) — mémoire très limitée. Son buffer de parsing JSON est trop petit pour avaler un `POST /auto` contenant 3 intervals ou plus d'un coup : il répond alors `HTTP 400 "could not parse the received JSON"`, **alors même qu'il stocke et exécute parfaitement 5 intervals ou plus** (l'app Red Sea les pousse de façon incrémentale).
-
-Pour être compatible avec les deux, la restauration du programme de vagues **envoie les intervals un par un** à l'intérieur d'un seul cycle d'édition :
-
-```
-POST /auto/init       {"uid": op_uid}
-POST /auto            {"intervals": [interval_0]}
-POST /auto            {"intervals": [interval_1]}
-…                     (un POST par interval — l'appareil les accumule)
-POST /auto/complete   {"uid": op_uid}
-POST /auto/apply      {"uid": op_uid}
-```
-
-Chaque requête reste minuscule, donc le buffer de l'ESP8266 suffit, et le firmware empile les intervals. Cette méthode fonctionne aussi sur l'ESP32 : un seul chemin de code pour les deux générations.
-
-> 💡 La même précaution s'applique à l'intégration Home Assistant `ha-reefbeat` (édition d'une vague via l'API locale) : elle pousse également les intervals un par un.
-
 ---
 
 ## 🐛 Dépannage
@@ -1092,16 +769,6 @@ Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour les problèmes courants :
 - INA226 lit `0.000A` → vérifier le câblage en série du shunt
 - Victron `'Scanner' has no attribute 'scan'` → version `victron-ble` incompatible
 - MQTT discovery sensors absents → vérifier les credentials et le `base_topic`
-
-**Spécifique au hotspot de secours :**
-
-- Une pompe reste `DOWN` sur le hotspot → vérifier que sa MAC est bien dans `controller_mac_ips` (sinon elle est rejetée par la liste blanche). Relancer `configure.py` pour la (re)collecter via `/wifi`.
-- Une pompe met longtemps à rejoindre → certains modèles (RSRUN) ne rebasculent qu'après leur watchdog Wi-Fi (~15 min). Le failover patiente jusqu'à 900s ; laissez le test tourner assez longtemps. Le watchdog est réglable côté Red Sea.
-- Les réservations DHCP ne sont pas honorées → la plage DHCP du hotspot doit couvrir les derniers octets des pompes. La migration auto élargit la plage à `.250` au démarrage ; vérifiez `hotspot.dhcp_end` dans `config.json`.
-- Logs `[DHCP]` montrant des appareils inconnus → ce sont d'anciens baux ; ils sont désormais purgés à l'activation et seules les pompes whitelistées sont affichées.
-- Restauration ReefWave en `HTTP 400 "could not parse the received JSON"` → firmware ESP8266 ancien dont le buffer JSON est trop petit pour un programme multi-intervals envoyé en bloc. La restauration envoie désormais les intervals un par un (voir « Compatibilité firmware ReefWave »), ce qui règle le problème. Mettre à jour le firmware de la pompe via l'app Red Sea est recommandé mais non requis.
-
-> 💡 Au démarrage, le service affiche `[CONFIG] Auto-migrated settings` s'il a complété/corrigé des réglages d'une `config.json` ancienne (plage DHCP, timeout de reconnexion, cadence health-check). Éditez `config.json` pour rendre ces valeurs permanentes.
 
 ---
 
