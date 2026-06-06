@@ -477,6 +477,11 @@ If you don't want to buy a modem, you can use a **smartphone connected via USB**
 
 ### Increasing autonomy
 
+<p align="center">
+  <img src="docs/images/level3_upgraded.png" alt="level3 upgraded">
+</p>
+
+
 > **Goal**: double (or more) battery capacity for longer outages.
 
 The simplest and safest method is adding one or more **identical batteries in parallel**. LiFePO₄ batteries with internal BMS (like the Kepworth 24V 60Ah) natively support parallel operation.
