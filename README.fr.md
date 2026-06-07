@@ -749,6 +749,10 @@ sudo rm /etc/cron.d/reefbeat-reboot
 
 ## 🔌 Power Flow Card Plus (tableau de bord optionnel)
 
+<p align="center">
+  <img src="docs/images/power-flow-card.png" alt="Powerflow Card center">
+</p>
+
 Vous pouvez visualiser les flux d'énergie du système batterie dans un tableau de bord Home Assistant avec [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
 
 La carte affiche les flux de puissance en temps réel entre le secteur, la batterie et les pompes individuelles (gyres ReefWave, pompe de remontée ReefRun, écumeur DC) avec des icônes dynamiques qui changent selon l'état des pompes.
