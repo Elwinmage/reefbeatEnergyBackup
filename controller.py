@@ -1071,6 +1071,9 @@ class PumpController:
 
         status = "OK" if ok else "FAIL"
         print(f"    [API] {label}@{ip} -> {intensity}% {status}")
+        if ok and hw.startswith("RSWAVE"):
+            print(f"    [API] ⚠ ReefWave cloud desync: the Red Sea app "
+                  f"will not reflect this change until restore")
 
     def _api_restore(self, ctrl: dict) -> None:
         """

@@ -287,6 +287,9 @@ def test_pump(ctrl: dict, dry_run: bool = False) -> bool:
 
     # Step 2: Apply test intensity
     info(f"Step 2/6: Applying test intensity ({TEST_INTENSITY}%)...")
+    if hw.startswith("RSWAVE"):
+        warn("ReefWave uses local API — the Red Sea mobile app will NOT "
+             "reflect this change (cloud desync). This is normal.")
     apply_ok = False
     if hw.startswith("RSWAVE"):
         apply_ok = _rswave_apply_test(ctrl, TEST_INTENSITY)
@@ -329,8 +332,14 @@ def test_pump(ctrl: dict, dry_run: bool = False) -> bool:
 
     if restore_ok:
         ok("Original configuration restored")
+        if hw.startswith("RSWAVE"):
+            info("The ReefWave is back to its original schedule locally.")
+            info("The Red Sea cloud/app will re-sync on next app connection.")
     else:
         fail("RESTORE FAILED — check device manually!")
+        if hw.startswith("RSWAVE"):
+            warn("The ReefWave may still be running the test schedule!")
+            warn("Open the ReefBeat app or push the original config manually.")
         all_ok = False
 
     # Step 6: Verify restoration
