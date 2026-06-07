@@ -94,11 +94,6 @@ The system is built in three levels, each adding functionality. You can start at
 
 ### Level 1 — Basic setup
 
-<p align="center">
-  <img src="docs/images/level1.png" alt="level1">
-</p>
-
-
 > **Goal**: provide battery backup for pumps during power outages, without monitoring or automation.
 
 #### 📦 Hardware
@@ -220,11 +215,6 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 
 ### Level 2 — Normal setup *(recommended)*
 
-
-<p align="center">
-  <img src="docs/images/level2.png" alt="level2">
-</p>
-
 > **Goal**: add real-time battery monitoring, automatic outage detection, and progressive pump degradation based on SoC. This is the **recommended** level for a permanent installation.
 
 #### 📦 Additional hardware (on top of level 1)
@@ -332,11 +322,6 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 ---
 
 ### Level 3 — Advanced setup
-
-
-<p align="center">
-  <img src="docs/images/level3.png" alt="level3">
-</p>
 
 > **Goal**: add remote charger monitoring, a connected circuit breaker for **scheduled discharge tests**, and 4G LTE backup for notifications when all networks are down.
 >
@@ -476,11 +461,6 @@ If you don't want to buy a modem, you can use a **smartphone connected via USB**
 ---
 
 ### Increasing autonomy
-
-<p align="center">
-  <img src="docs/images/level3_upgraded.png" alt="level3 upgraded">
-</p>
-
 
 > **Goal**: double (or more) battery capacity for longer outages.
 
@@ -888,6 +868,75 @@ python3 update.py --force
 # Show current version
 python3 update.py --version
 ```
+
+---
+
+## 🔌 Power Flow Card Plus (optional dashboard)
+
+You can visualize the battery system's power flows in a Home Assistant dashboard using [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
+
+The card shows real-time power flows between the grid (mains), the battery, and the individual pumps (ReefWave gyres, ReefRun return pump, DC Skimmer) with dynamic icons that change based on pump state.
+
+#### Template sensors for pump nodes
+
+Add these template sensors to your `configuration.yaml` to aggregate pump speeds for the Power Flow Card. Adapt entity IDs to match your devices:
+
+```yaml
+template:
+  - sensor:
+      # The icon is NOT defined here because
+      # `power-flow-card-plus` doesn't read the entity icon; it will
+      # be injected dynamically at card level by
+      # `config-template-card` (see below). Adapt entity IDs.
+      - name: "RSWave Gyre 1 Speed"
+        unique_id: rswave_gyre1_speed
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
+
+      - name: "RSWave Gyre 2 Speed"
+        unique_id: rswave_gyre2_speed
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ fwd{% elif r > 0 %}← rev{% else %}■{% endif %}
+```
+
+#### Dynamic icons via `config-template-card`
+
+`power-flow-card-plus` only supports a static icon per `individual` node ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). To switch icons based on pump state (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), wrap the card with [`config-template-card`](https://github.com/iantrich/config-template-card) (HACS → Frontend): the wrapper re-evaluates `${...}` variables whenever a listed entity changes state and passes the finalised config to the child card.
+
+```yaml
+type: custom:config-template-card
+variables:
+  GYRE1_SPEED: states['sensor.rswave_gyre1_speed'].state
+  GYRE2_SPEED: states['sensor.rswave_gyre2_speed'].state
+  PUMP_STATE: states['sensor.reef_battery_backup_puissance'].state
+entities:
+  - sensor.reef_battery_backup_puissance
+  - sensor.reef_battery_backup_soc_batterie
+  - sensor.rswave_gyre1_speed
+  - sensor.rswave_gyre2_speed
+card:
+  type: custom:power-flow-card-plus
+  # ... your power-flow-card-plus configuration here
+  # Use ${GYRE1_SPEED}, ${GYRE2_SPEED}, ${PUMP_STATE} for dynamic icons
+```
+
+> 💡 The `redsea:gyre-*`, `redsea:pump-*` and `redsea:skimmer-*` icons come from the [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) custom icons pack.
 
 ---
 

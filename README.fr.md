@@ -62,12 +62,6 @@ Le système se construit en trois niveaux, chacun ajoutant des fonctionnalités.
 
 ### Niveau 1 — Montage de base
 
-
-<p align="center">
-  <img src="docs/images/level1.png" alt="level1">
-</p>
-
-
 > **Objectif** : assurer une alimentation des pompes sur batterie en cas de coupure secteur, sans monitoring ni automatisation.
 
 #### 📦 Matériel
@@ -189,10 +183,6 @@ Polarité standard positif au centre. Soudez ou sertissez un fil rouge 2,5 mm² 
 
 ### Niveau 2 — Montage normal *(recommandé)*
 
-<p align="center">
-  <img src="docs/images/level2.png" alt="level2" width>
-</p>
-
 > **Objectif** : ajouter le monitoring batterie temps réel, la détection automatique de coupure, et la dégradation progressive des pompes selon le SoC. C'est le niveau **recommandé** pour une installation pérenne.
 
 #### 📦 Matériel additionnel (en plus du niveau 1)
@@ -300,10 +290,6 @@ Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 
 ---
 
 ### Niveau 3 — Montage avancé
-
-<p align="center">
-  <img src="docs/images/level3.png" alt="level3" width>
-</p>
 
 > **Objectif** : ajouter le contrôle à distance du chargeur, un disjoncteur connecté pour pouvoir déclencher des **tests de décharge programmés** depuis Home Assistant, et un modem 4G pour les notifications même quand tout le réseau est coupé.
 >
@@ -443,11 +429,6 @@ Si vous ne souhaitez pas acheter un modem, vous pouvez utiliser un **smartphone 
 ---
 
 ### Augmentation d'autonomie
-
-
-<p align="center">
-  <img src="docs/images/level3_upgraded.png" alt="level3 upgraded">
-</p>
 
 > **Objectif** : doubler (ou plus) la capacité batterie pour des coupures plus longues.
 
@@ -763,6 +744,75 @@ Pour désactiver manuellement :
 ```bash
 sudo rm /etc/cron.d/reefbeat-reboot
 ```
+
+---
+
+## 🔌 Power Flow Card Plus (tableau de bord optionnel)
+
+Vous pouvez visualiser les flux d'énergie du système batterie dans un tableau de bord Home Assistant avec [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
+
+La carte affiche les flux de puissance en temps réel entre le secteur, la batterie et les pompes individuelles (gyres ReefWave, pompe de remontée ReefRun, écumeur DC) avec des icônes dynamiques qui changent selon l'état des pompes.
+
+#### Capteurs template pour les nœuds pompes
+
+Ajoutez ces capteurs template dans votre `configuration.yaml` pour agréger les vitesses de pompes. Adaptez les entity IDs à vos appareils :
+
+```yaml
+template:
+  - sensor:
+      # L'icône, elle, n'est PAS définie ici parce que
+      # `power-flow-card-plus` ne lit pas l'icône de l'entité ; elle
+      # sera injectée dynamiquement par `config-template-card` au
+      # niveau de la carte (cf. plus bas). Adapter les entity IDs.
+      - name: "RSWave Gyre 1 Vitesse"
+        unique_id: rswave_gyre1_speed
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave1_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave1_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ av{% elif r > 0 %}← ar{% else %}■{% endif %}
+
+      - name: "RSWave Gyre 2 Vitesse"
+        unique_id: rswave_gyre2_speed
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+          {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+          {{ [f, r] | max | round(0) }}
+        attributes:
+          direction: >
+            {% set f = states('sensor.rswave45_<your_wave2_id>_intensite_marche_avant') | float(0) %}
+            {% set r = states('sensor.rswave45_<your_wave2_id>_intensite_marche_arriere') | float(0) %}
+            {% if f > 0 %}→ av{% elif r > 0 %}← ar{% else %}■{% endif %}
+```
+
+#### Icônes dynamiques via `config-template-card`
+
+`power-flow-card-plus` ne supporte qu'une icône statique par nœud `individual` ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). Pour faire varier l'icône selon l'état des pompes (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), on enveloppe la carte dans [`config-template-card`](https://github.com/iantrich/config-template-card) (HACS → Frontend) : ce wrapper réévalue les variables `${...}` à chaque changement d'état des entités listées, et passe la config finalisée à la carte enfant.
+
+```yaml
+type: custom:config-template-card
+variables:
+  GYRE1_SPEED: states['sensor.rswave_gyre1_speed'].state
+  GYRE2_SPEED: states['sensor.rswave_gyre2_speed'].state
+  PUMP_STATE: states['sensor.reef_battery_backup_puissance'].state
+entities:
+  - sensor.reef_battery_backup_puissance
+  - sensor.reef_battery_backup_soc_batterie
+  - sensor.rswave_gyre1_speed
+  - sensor.rswave_gyre2_speed
+card:
+  type: custom:power-flow-card-plus
+  # ... votre configuration power-flow-card-plus ici
+  # Utilisez ${GYRE1_SPEED}, ${GYRE2_SPEED}, ${PUMP_STATE} pour les icônes dynamiques
+```
+
+> 💡 Les icônes `redsea:gyre-*`, `redsea:pump-*` et `redsea:skimmer-*` proviennent du pack d'icônes personnalisées [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component).
 
 ---
 

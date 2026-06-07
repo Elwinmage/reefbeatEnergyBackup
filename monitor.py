@@ -86,31 +86,7 @@ class CoulombCounter:
     """
     capacity_ah: float
     soc: float = 100.0
-    # Expected polling interval. Used to clamp dt so an occasional slow
-    # loop iteration (e.g. a blocking BLE read timing out, GC pause, or
-    # heavy system load) cannot inject a huge coulomb-counting step and
-    # make the SoC jump. Set from poll_interval_s by the caller.
-    expected_dt_s: float = 5.0
     _last_time: Optional[float] = field(default=None, repr=False)
-
-    def _clamped_dt_h(self, now: float) -> float:
-        """
-        Return the elapsed time since the last update, in hours, clamped
-        to a sane maximum.
-
-        The coulomb integrator must advance with *physical* time, but the
-        wall-clock gap between two calls also includes any latency in the
-        rest of the main loop (BLE charger reads, MQTT, logging). If one
-        iteration stalls for several seconds, the raw delta would cause a
-        disproportionate SoC step. We cap the delta at 3x the expected
-        poll interval: normal jitter passes through untouched, but a
-        pathological stall is treated as a single normal step.
-        """
-        raw_dt = now - (self._last_time if self._last_time is not None else now)
-        max_dt = max(self.expected_dt_s * 3.0, 1.0)
-        if raw_dt < 0:
-            raw_dt = 0.0  # monotonic clock should never go backwards, be safe
-        return min(raw_dt, max_dt) / 3600.0
 
     def update(self, current: float, voltage: float,
                on_mains: bool = False) -> float:
@@ -141,7 +117,7 @@ class CoulombCounter:
                 # Post-outage active charging: use coulomb counting
                 # (current is negative = charging, SoC increases)
                 if self._last_time is not None:
-                    dt_h = self._clamped_dt_h(now)
+                    dt_h = (now - self._last_time) / 3600.0
                     # current is negative → subtracting a negative = adding
                     self.soc -= (current * dt_h / self.capacity_ah) * 100.0
                     self.soc = max(0.0, min(100.0, self.soc))
@@ -168,7 +144,7 @@ class CoulombCounter:
 
         # On battery: coulomb counting is the primary signal
         if self._last_time is not None:
-            dt_h = self._clamped_dt_h(now)
+            dt_h = (now - self._last_time) / 3600.0
             self.soc -= (current * dt_h / self.capacity_ah) * 100.0
             self.soc = max(0.0, min(100.0, self.soc))
         self._last_time = now
@@ -284,7 +260,6 @@ class INA226Backend(BatteryMonitorBackend):
         self._counter = CoulombCounter(
             capacity_ah=battery_cfg.get("capacity_ah", 60.0),
             soc=battery_cfg.get("initial_soc", 100.0),
-            expected_dt_s=cfg.get("poll_interval_s", 5.0),
         )
 
     @property
@@ -399,15 +374,24 @@ class VictronChargerAux:
     IP22 AC charger). Returns charger state on demand; never blocks the
     main loop on failure.
 
+    Includes a watchdog: after MAX_CONSECUTIVE_FAILURES failed reads,
+    the BLE adapter is reset (hciconfig hci0 reset) to recover from
+    stuck states. A log warning is emitted after WARN_THRESHOLD failures.
+
     Required config keys (under monitoring.victron):
       ble_address     MAC address of the Victron device (e.g. C0:E1:2F:...)
       encryption_key  Per-device key from VictronConnect app
     """
 
+    MAX_CONSECUTIVE_FAILURES = 10
+    WARN_THRESHOLD = 5
+
     def __init__(self, cfg: dict):
         self._ble_address = cfg.get("ble_address", "")
         self._encryption_key = cfg.get("encryption_key", "")
         self._device_keys: dict = {}
+        self._consecutive_failures = 0
+        self._total_resets = 0
 
     @property
     def name(self) -> str:
@@ -448,6 +432,9 @@ class VictronChargerAux:
         charger fields, or None on any failure (timeout, parse error,
         etc). The caller treats a None as "no fresh data this cycle"
         and just doesn't update the charger fields.
+
+        Watchdog: after MAX_CONSECUTIVE_FAILURES, the BLE adapter is
+        reset to recover from stuck states.
 
         Returns dict with keys: voltage, current, state, error, source
         """
@@ -495,14 +482,20 @@ class VictronChargerAux:
             try:
                 parsed = loop.run_until_complete(_scan_once())
             except asyncio.TimeoutError:
-                # Charger off (mains down) or out of range -- normal during
-                # outages. Don't spam the log.
+                self._on_failure("timeout")
+                return None
+            except Exception as e:
+                self._on_failure(f"scan error: {e}")
                 return None
         finally:
             loop.close()
 
         if parsed is None:
+            self._on_failure("no data")
             return None
+
+        # Success — reset failure counter
+        self._on_success()
 
         # Extract a uniform dict regardless of device type.
         # Voltage/current: try battery getters first, then output channel 1.
@@ -542,6 +535,61 @@ class VictronChargerAux:
             "source": f"victron-{type(parsed).__name__.lower()}",
         }
 
+    # =========================================================================
+    # Watchdog helpers
+    # =========================================================================
+
+    def _on_success(self):
+        """Reset failure counter on successful read."""
+        if self._consecutive_failures > 0:
+            print(f"[VICTRON-AUX] BLE recovered after "
+                  f"{self._consecutive_failures} failures")
+        self._consecutive_failures = 0
+
+    def _on_failure(self, reason: str):
+        """Track consecutive failures and reset BLE if needed."""
+        self._consecutive_failures += 1
+
+        if self._consecutive_failures == self.WARN_THRESHOLD:
+            print(f"[VICTRON-AUX] WARNING: {self._consecutive_failures} "
+                  f"consecutive BLE failures (last: {reason})")
+
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            self._reset_ble_adapter()
+            self._consecutive_failures = 0
+
+    def _reset_ble_adapter(self):
+        """Reset the BLE adapter to recover from stuck states."""
+        self._total_resets += 1
+        print(f"[VICTRON-AUX] Resetting BLE adapter (reset #{self._total_resets})")
+        try:
+            import subprocess
+            # Power cycle the BLE adapter
+            subprocess.run(
+                ["sudo", "hciconfig", "hci0", "reset"],
+                capture_output=True, timeout=10)
+            time.sleep(2)
+            subprocess.run(
+                ["sudo", "hciconfig", "hci0", "up"],
+                capture_output=True, timeout=10)
+            time.sleep(3)
+            print("[VICTRON-AUX] BLE adapter reset complete")
+        except Exception as e:
+            print(f"[VICTRON-AUX] BLE reset failed: {e}")
+            # Try alternative method
+            try:
+                subprocess.run(
+                    ["sudo", "bluetoothctl", "power", "off"],
+                    capture_output=True, timeout=5)
+                time.sleep(1)
+                subprocess.run(
+                    ["sudo", "bluetoothctl", "power", "on"],
+                    capture_output=True, timeout=5)
+                time.sleep(3)
+                print("[VICTRON-AUX] BLE adapter reset via bluetoothctl")
+            except Exception:
+                print("[VICTRON-AUX] All BLE reset methods failed")
+
     def close(self):
         print("[VICTRON-AUX] Closed")
 
@@ -576,12 +624,7 @@ def create_monitor_backend(
     monitoring_cfg = cfg.get("monitoring", {})
     battery_cfg = cfg.get("battery", {})
 
-    # Make the global poll interval available to the INA226 backend so the
-    # coulomb counter can clamp its integration step (see CoulombCounter).
-    ina226_cfg = dict(monitoring_cfg.get("ina226", {}))
-    ina226_cfg.setdefault("poll_interval_s", cfg.get("poll_interval_s", 5.0))
-
-    primary = INA226Backend(ina226_cfg, battery_cfg)
+    primary = INA226Backend(monitoring_cfg.get("ina226", {}), battery_cfg)
 
     aux: Optional[VictronChargerAux] = None
     victron_cfg = monitoring_cfg.get("victron")

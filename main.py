@@ -27,6 +27,7 @@ from mqtt_buffer import MqttBuffer
 from notifier import create_notifier
 from updater import create_updater
 from lte_monitor import create_lte_monitor
+from energy import EnergyAccumulator, publish_energy_discovery, publish_energy_state
 
 
 # =============================================================================
@@ -130,15 +131,21 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
     ]
 
     # Charger telemetry (only when a Victron auxiliary is configured).
-    # Sensors stay None-safe: if HA receives null, the entity goes
-    # "unavailable" instead of holding stale values.
+    # These sensors have an availability_template that checks if the
+    # charger data is present in the payload. When the Victron BLE is
+    # not responding or not polled yet, the sensors show as
+    # "unavailable" instead of trying to parse a missing numeric value.
+    charger_avail_tpl = "{{ 'online' if value_json.charger_voltage is defined and value_json.charger_voltage is not none else 'offline' }}"
     if has_victron:
         sensors += [
-            ("Tension chargeur",  "charger_voltage", "{{ value_json.charger_voltage | default('unavailable') }}", "V",  "voltage", "mdi:ev-station"),
-            ("Courant chargeur",  "charger_current", "{{ value_json.charger_current | default('unavailable') }}", "A",  "current", "mdi:current-ac"),
-            ("État chargeur",     "charger_state",   "{{ value_json.charger_state | default('unavailable') }}",   None, None,      "mdi:battery-charging"),
-            ("Erreur chargeur",   "charger_error",   "{{ value_json.charger_error | default('unavailable') }}",   None, None,      "mdi:alert-circle-outline"),
+            ("Tension chargeur",  "charger_voltage", "{{ value_json.charger_voltage }}", "V",  "voltage", "mdi:ev-station"),
+            ("Courant chargeur",  "charger_current", "{{ value_json.charger_current }}", "A",  "current", "mdi:current-ac"),
+            ("État chargeur",     "charger_state",   "{{ value_json.charger_state | default('unknown') }}",   None, None,      "mdi:battery-charging"),
+            ("Erreur chargeur",   "charger_error",   "{{ value_json.charger_error | default('unknown') }}",   None, None,      "mdi:alert-circle-outline"),
         ]
+
+    # Track which UIDs are charger sensors (need availability template)
+    charger_uids = {"charger_voltage", "charger_current", "charger_state", "charger_error"}
 
     for name, uid, tpl, unit, dc, icon in sensors:
         uid_full = f"{device_name}_{uid}"
@@ -154,6 +161,10 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
             payload["unit_of_measurement"] = unit
         if dc:
             payload["device_class"] = dc
+        # Add availability for charger sensors
+        if uid in charger_uids:
+            payload["availability_topic"] = f"{base}/sensor/{device_name}/state"
+            payload["availability_template"] = charger_avail_tpl
         buffer.publish(
             f"{base}/sensor/{uid_full}/config",
             json.dumps(payload), retain=True,
@@ -163,6 +174,9 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         time.sleep(0.05)
 
     print(f"[MQTT] Queued {len(sensors)} HA discovery configs")
+
+    # Energy accumulator discovery
+    publish_energy_discovery(buffer, mqtt_cfg)
 
 
 # =============================================================================
@@ -312,6 +326,11 @@ def main():
         _mains_runtime_h: Optional[float] = None
         _prev_on_mains: bool = True
 
+        # Energy accumulator (kWh counters with disk persistence)
+        energy = EnergyAccumulator()
+        energy_publish_counter = 0
+        energy_publish_every = 12  # Publish every 12 cycles (~60s at 5s poll)
+
         while _running:
             # Read battery (INA226 is fast and reliable)
             on_mains = outage_mgr.power_state == PowerState.MAINS
@@ -433,6 +452,17 @@ def main():
                 topic = f"{base_topic}/sensor/{device_name}/state"
                 mqtt_buffer.publish(topic, json.dumps(data))
 
+            # Energy accumulation
+            on_battery_now = outage_mgr.power_state == PowerState.BATTERY
+            energy.update(reading.voltage, reading.current, on_battery_now)
+
+            # Publish energy counters periodically (every ~60s)
+            energy_publish_counter += 1
+            if energy_publish_counter >= energy_publish_every and mqtt_client:
+                energy_publish_counter = 0
+                publish_energy_state(
+                    mqtt_buffer, mqtt_cfg, energy.get_state())
+
             # Console
             pwr = "⚡" if status["power_state"] == "mains" else "🔋"
             net_icons = {
@@ -468,6 +498,7 @@ def main():
             time.sleep(poll_interval)
 
     finally:
+        energy.close()
         lte_monitor.stop()
         updater.stop()
         network.cleanup()
