@@ -442,6 +442,10 @@ Si vous ne souhaitez pas acheter un modem, vous pouvez utiliser un **smartphone 
 
 ### Augmentation d'autonomie
 
+<p align="center">
+  <img src="docs/images/level3_upgraded.png" alt="level3_upgraded">
+</p>
+
 > **Objectif** : doubler (ou plus) la capacité batterie pour des coupures plus longues.
 
 Le moyen le plus simple et le plus sûr est d'ajouter une ou plusieurs **batteries identiques en parallèle**. Les batteries LiFePO₄ avec BMS interne (comme la Kepworth 24V 60Ah) acceptent ce mode de fonctionnement nativement.
