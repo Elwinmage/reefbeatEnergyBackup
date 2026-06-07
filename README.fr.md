@@ -795,21 +795,110 @@ template:
 
 `power-flow-card-plus` ne supporte qu'une icône statique par nœud `individual` ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). Pour faire varier l'icône selon l'état des pompes (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), on enveloppe la carte dans [`config-template-card`](https://github.com/iantrich/config-template-card) (HACS → Frontend) : ce wrapper réévalue les variables `${...}` à chaque changement d'état des entités listées, et passe la config finalisée à la carte enfant.
 
+Exemple complet fonctionnel (adaptez les entity IDs à vos appareils) :
+
 ```yaml
 type: custom:config-template-card
 variables:
-  GYRE1_SPEED: states['sensor.rswave_gyre1_speed'].state
-  GYRE2_SPEED: states['sensor.rswave_gyre2_speed'].state
-  PUMP_STATE: states['sensor.reef_battery_backup_puissance'].state
+  GYRE1_ICON: |
+    (() => {
+      const v = Math.max(
+        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_avant'].state) || 0,
+        parseFloat(states['sensor.rswave45_<your_wave1_id>_intensite_marche_arriere'].state) || 0
+      );
+      if (v <= 0) return 'redsea:gyre-off';
+      if (v < 35) return 'redsea:gyre-min';
+      if (v < 70) return 'redsea:gyre-med';
+      return 'redsea:gyre-max';
+    })()
+  GYRE2_ICON: |
+    (() => {
+      const v = Math.max(
+        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_avant'].state) || 0,
+        parseFloat(states['sensor.rswave45_<your_wave2_id>_intensite_marche_arriere'].state) || 0
+      );
+      if (v <= 0) return 'redsea:gyre-off';
+      if (v < 35) return 'redsea:gyre-min';
+      if (v < 70) return 'redsea:gyre-med';
+      return 'redsea:gyre-max';
+    })()
+  PUMP_ICON: |
+    parseFloat(states['number.rsrun_<your_pump_id>_pump_1_vitesse'].state) > 0
+      ? 'redsea:pump-on' : 'redsea:pump-off'
+  SKIMMER_ICON: |
+    parseFloat(states['number.rsrun_<your_pump_id>_pump_2_vitesse'].state) > 0
+      ? 'redsea:skimmer-on' : 'redsea:skimmer-off'
 entities:
-  - sensor.reef_battery_backup_puissance
-  - sensor.reef_battery_backup_soc_batterie
-  - sensor.rswave_gyre1_speed
-  - sensor.rswave_gyre2_speed
+  - sensor.rswave45_<your_wave1_id>_intensite_marche_avant
+  - sensor.rswave45_<your_wave1_id>_intensite_marche_arriere
+  - sensor.rswave45_<your_wave2_id>_intensite_marche_avant
+  - sensor.rswave45_<your_wave2_id>_intensite_marche_arriere
+  - number.rsrun_<your_pump_id>_pump_1_vitesse
+  - number.rsrun_<your_pump_id>_pump_2_vitesse
 card:
   type: custom:power-flow-card-plus
-  # ... votre configuration power-flow-card-plus ici
-  # Utilisez ${GYRE1_SPEED}, ${GYRE2_SPEED}, ${PUMP_STATE} pour les icônes dynamiques
+  title: Reef Battery Backup
+  entities:
+    battery:
+      entity: sensor.reef_battery_backup_puissance
+      state_of_charge: sensor.reef_battery_backup_soc_batterie
+      name: Batterie LiFePO4
+      icon: mdi:battery
+      invert_state: true
+      color:
+        consumption: "#4caf50"
+        production: "#ff9800"
+      display_state: two_way
+      show_state_of_charge: true
+      state_of_charge_unit: "%"
+      state_of_charge_decimals: 0
+    home:
+      entity: sensor.reef_battery_backup_energie_consommee
+      name: Aquarium
+      icon: mdi:fishbowl-outline
+      color_value: true
+    grid:
+      entity: sensor.reef_battery_backup_tension_chargeur
+      name: Secteur
+      icon: mdi:transmission-tower
+      color_value: true
+      display_state: one_way
+    individual:
+      - entity: sensor.rswave_gyre_1_vitesse
+        name: Gyre 1
+        color: "#00bcd4"
+        icon: ${GYRE1_ICON}
+        unit_of_measurement: "%"
+        display_zero: true
+        secondary_info:
+          template: |
+            {{ state_attr('sensor.rswave_gyre_1_vitesse', 'direction') }}
+      - entity: sensor.rswave_gyre_2_vitesse
+        name: Gyre 2
+        icon: ${GYRE2_ICON}
+        color: "#00bcd4"
+        unit_of_measurement: "%"
+        display_zero: true
+        secondary_info:
+          template: |
+            {{ state_attr('sensor.rswave_gyre_2_vitesse', 'direction') }}
+      - entity: sensor.pompe_retour_vitesse
+        name: Pompe retour
+        icon: ${PUMP_ICON}
+        color: "#2196f3"
+        unit_of_measurement: "%"
+        display_zero: true
+      - entity: sensor.ecumeur_vitesse
+        name: Écumeur
+        icon: ${SKIMMER_ICON}
+        color: "#ff2030"
+        unit_of_measurement: "%"
+        display_zero: true
+  clickable_entities: true
+  display_zero_lines:
+    mode: show
+    transparency: 50
+  use_new_flow_rate_model: true
 ```
 
 > 💡 Les icônes `redsea:gyre-*`, `redsea:pump-*` et `redsea:skimmer-*` proviennent du pack d'icônes personnalisées [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component).
