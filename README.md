@@ -873,6 +873,10 @@ python3 update.py --version
 
 ## 🔌 Power Flow Card Plus (optional dashboard)
 
+<p align="center">
+  <img src="docs/images/power-flow-card.png" alt="Powerflow Card center">
+</p>
+
 You can visualize the battery system's power flows in a Home Assistant dashboard using [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
 
 The card shows real-time power flows between the grid (mains), the battery, and the individual pumps (ReefWave gyres, ReefRun return pump, DC Skimmer) with dynamic icons that change based on pump state.
