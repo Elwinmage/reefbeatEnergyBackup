@@ -273,8 +273,8 @@ Le relais Finder 40.61.8.230 est un **détecteur d'absence de tension secteur** 
 |---|---|
 | A1 | Phase 230 V |
 | A2 | Neutre 230 V |
-| 11 (commun) | GND du Pi |
-| 12 (NC) | GPIO 26 du Pi (avec pull-up interne) |
+| 11 (commun) | GND du Pi (Pin 39) |
+| 12 (NC) | Pin 37 du Pi (GPIO 26, avec pull-up interne) |
 
 Sur secteur OK, la bobine est alimentée → contact NC ouvert → GPIO lit 1 (tiré vers 3.3 V par pull-up).
 Sur coupure, la bobine retombe → contact NC fermé → GPIO tiré à GND, lit 0.

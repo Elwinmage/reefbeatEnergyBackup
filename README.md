@@ -306,8 +306,8 @@ The Finder 40.61.8.230 is a **mains voltage absence detector**: its coil is powe
 |---|---|
 | A1 | 230V Phase |
 | A2 | 230V Neutral |
-| 11 (common) | Pi GND |
-| 12 (NC) | Pi GPIO 26 (with internal pull-up) |
+| 11 (common) | Pi GND (Pin 39) |
+| 12 (NC) | Pi Pin 37 (GPIO 26, with internal pull-up) |
 
 Mains OK → coil energized → NC contact open → GPIO reads 1 (pulled to 3.3V).
 Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
