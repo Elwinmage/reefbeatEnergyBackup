@@ -142,10 +142,10 @@ The system is built in three levels, each adding functionality. You can start at
 
 #### 📝 How it works
 
-The principle: **the battery sits in parallel between the charger and the loads**. It is constantly maintained at full charge by the charger (included with the Kepworth battery) in float mode, and automatically supplies power when mains drops — no switch, no electronics in between.
+The principle: **the battery sits in series between the charger and the loads**. It is constantly maintained at full charge by the charger (included with the Kepworth battery) in float mode, and automatically supplies power when mains drops — no switch, no electronics in between.
 
 - **ReefWave**: uses the **5.5 × 2.1 mm barrel jack** connector (positive center)
-- **ReefRun and DC Skimmer**: use the **IP68 4-pin waterproof connector** proprietary to Red Sea (the pump includes its own regulator, raw 24V is fine)
+- **ReefRun and DC Skimmer**: use the **IP68 4-pin waterproof connector** (the pump includes its own regulator, raw 24V is fine)
 - The included charger stays plugged in permanently: it automatically switches to float mode once full charge is reached
 
 #### 🔌 Cable fabrication guide
@@ -201,7 +201,7 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
 >   <img src="docs/images/lm2596.png" alt="LM2596 DC-DC buck converter" width="200">
 > </p>
 >
-> Wire it to the skimmer's IP68 connector (pins 1+3 only). Then recalibrate the cup sensor via the ReefBeat app. The ReefWave and ReefRun stay connected directly to the battery — they work fine at 26-27V.
+> Wire it to the skimmer's IP68 connector (pins 1+3 only). Then recalibrate the cup sensor via the ReefBeat app, the [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) integration, or the [ha-reef-card](https://github.com/Elwinmage/ha-reef-card). The ReefWave and ReefRun stay connected directly to the battery — they work fine at 26-27V.
 
 #### ✅ What you get
 
@@ -254,26 +254,28 @@ Standard positive-center polarity. Solder or crimp a 2.5 mm² red wire to the ce
                             ▼          │   230V   │
                      ┌─────────────┐   └────┬─────┘
                      │   Battery   │        │ NO/NC
-              ┌──────┤  LiFePO₄    │        │ contact
-              │      └──────┬──────┘        │
-              │             │ 24V           │
-              │      [Shunt INA226]         │
-              │             │               │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              │    │ DC-DC 24V→5V  │       │
-              │    └────────┬───────┘       │
-              │             │ 5V            │
-              │             ▼               │
-              │    ┌────────────────┐       │
-              ├────│  Raspberry Pi  │◄──────┘
-              │I2C │   GPIO 26     │ GPIO state
-              │SDA │   GPIO 2 SDA  │
-              │SCL │   GPIO 3 SCL  │
-              │    └────────────────┘
-              │
-              ▼
-       ReefRun / ReefWave / DC Skimmer
+                     │  LiFePO₄    │        │ contact
+                     └──────┬──────┘        │
+                            │ 24V           │
+                     ┌──────────────┐       │
+                     │ Shunt INA226 │       │
+                     └──┬───────┬───┘       │
+                   I2C  │       │ 24V       │
+                 SDA/SCL│       ▼           │
+                        │ ┌────────────┐    │
+                        │ │DC-DC 24V→5V│    │
+                        │ └─────┬──────┘    │
+                        │       │ 5V        │
+                        │       ▼           │
+                        │ ┌────────────┐    │
+                        └─│Raspberry Pi│◄───┘
+                          │  GPIO 26   │ GPIO state
+                          │  GPIO 2 SDA│
+                          │  GPIO 3 SCL│
+                          └────────────┘
+                                │
+                                ▼
+                  ReefRun / ReefWave / DC Skimmer
 ```
 
 #### 📝 Wiring details
@@ -353,7 +355,7 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
 | ![Charger BLE](docs/images/chargeur.png) **Victron Blue Smart IP22 24/12** *(replaces Kepworth charger — silent + BLE)* | [Victron Blue Smart IP22 24/12](https://www.amazon.fr/dp/B08P4Z8NL6) | ~155 € |
 | ![Circuit breaker](docs/images/disjoncteur.png) **Connected Wi-Fi circuit breaker 16A with meter** | [Tongou TO-Q-SY1-JWT](https://www.amazon.fr/dp/B08ND2RGX8) | ~30 € |
 | ![SIM7600G-H](docs/images/sim7600g-h.png) **SIM7600G-H 4G HAT** *(recommended — integrated on the Pi, RNDIS)* | [Kubii SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) | ~75 € |
-| ![DC-DC 5V](docs/images/dcdc-5v.png) **DC-DC 24V→5V 5A module** *(required if using SIM7600 HAT — the RPi USB alone can't power both)* | [DC-DC Buck 9-36V to 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2.50 € |
+| ![DC-DC 5V](docs/images/dcdc-5v.png) **DC-DC 24V→5V 5A module** *(required if using SIM7600 HAT — the battery USB alone can't power both)* | [DC-DC Buck 9-36V to 5.2V 5A](https://www.amazon.fr/dp/B0F9FLF6QB) | ~2.50 € |
 
 *Or alternatively to the SIM7600:*
 
@@ -378,9 +380,11 @@ Outage → coil drops → NC contact closes → GPIO pulled to GND, reads 0.
                                             │ 24V           │
                                             ▼               │
                                      ┌─────────────┐        │
-                                     │   Battery   │◄───[shunt INA226]
+                                     │   Battery   │        │
                                      └──────┬──────┘        │
                                             │ 24V           │
+                                     [shunt INA226]         │
+                                            │               │
                                             ▼               │
                                       (loads)               │
                                                             │
@@ -428,7 +432,7 @@ Configuration: retrieve the **encryption key** from the VictronConnect app (Sett
   <img src="docs/images/sim7600g-h.png" alt="SIM7600G-H 4G HAT" width="300">
 </p>
 
-The [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) plugs directly onto the Raspberry Pi's GPIO header. LTE Cat4 150 Mbps, global bands, with GNSS positioning.
+The [SIM7600G-H HAT](https://www.kubii.com/fr/hat-cartes-d-extensions/3296-module-hat-lte-cat-4-4g-3g-2g-pour-raspberry-pi-3272496306189.html) (~75€) connects to the Raspberry Pi via USB. LTE Cat4 150 Mbps, global bands, with GNSS positioning.
 
 The wizard automatically configures it in **RNDIS mode** — the module appears as a USB network interface (`usb0`) with DHCP. No PPP, QMI, or AT commands needed for data after initial setup.
 
@@ -439,7 +443,7 @@ The wizard automatically configures it in **RNDIS mode** — the module appears 
 
 After initial setup, the module boots automatically in RNDIS mode at every RPi startup — fully autonomous.
 
-> ⚡ **Power note**: the RPi's built-in USB port can power the Pi alone (~2.1A), but **not both the Pi and the SIM7600 HAT**. When using the SIM7600, power the RPi through a [DC-DC 24V→5V 5A buck module](https://www.amazon.fr/dp/B0F9FLF6QB) (~2.50€) connected to the battery bus, feeding the RPi's GPIO pins 2 (5V) and 6 (GND) — not the USB-C port.
+> ⚡ **Power note**: the battery's built-in USB port can power the Pi alone (~2.1A), but **not both the Pi and the SIM7600 HAT**. When using the SIM7600, power the RPi via USB through a [DC-DC 24V→5V 5A buck module](https://www.amazon.fr/dp/B0F9FLF6QB) (~2.50€) connected to the battery's +24V bus.
 
 **Testing:** `python3 test_sim7600.py` runs a complete diagnostic (serial, SIM, signal, network, connectivity).
 
@@ -680,7 +684,7 @@ Power restored (relay GPIO, instant)
     │
     ├── ReefBeat devices reconnect to home router Wi-Fi
     │
-    ├── Pump intensity restored to 100%
+    ├── Pump configuration restored to pre-outage nominal
     │
     ├── MQTT buffer replayed → HA gets the complete discharge curve
     │
