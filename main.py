@@ -12,10 +12,25 @@ Usage:
 
 import json
 import signal
+import socket
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+
+def _get_local_ip() -> str:
+    """Get the RPi's local IP address (primary interface)."""
+    try:
+        # Connect to a public DNS to determine the local IP
+        # (doesn't actually send data, just binds the socket)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "unknown"
 
 import paho.mqtt.client as mqtt
 
@@ -127,6 +142,7 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         ("Autonomie",         "runtime",         "{{ value_json.runtime_h }}",            "h",   None,      "mdi:timer-sand"),
         ("Durée coupure",     "outage_duration", "{{ value_json.outage_duration_min }}",  "min", None,      "mdi:clock-alert-outline"),
         ("Mode réseau",       "network_mode",    "{{ value_json.network_mode }}",         None,  None,      "mdi:wifi"),
+        ("IP locale",         "local_ip",        "{{ value_json.local_ip }}",             None,  None,      "mdi:ip-network"),
         ("Source monitoring", "monitor_source",  "{{ value_json.monitor_source }}",       None,  None,      "mdi:chip"),
     ]
 
@@ -140,12 +156,13 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
         sensors += [
             ("Tension chargeur",  "charger_voltage", "{{ value_json.charger_voltage }}", "V",  "voltage", "mdi:ev-station"),
             ("Courant chargeur",  "charger_current", "{{ value_json.charger_current }}", "A",  "current", "mdi:current-ac"),
+            ("Puissance chargeur", "charger_power",  "{{ (value_json.charger_voltage * value_json.charger_current) | round(1) }}", "W", "power", "mdi:flash"),
             ("État chargeur",     "charger_state",   "{{ value_json.charger_state | default('unknown') }}",   None, None,      "mdi:battery-charging"),
             ("Erreur chargeur",   "charger_error",   "{{ value_json.charger_error | default('unknown') }}",   None, None,      "mdi:alert-circle-outline"),
         ]
 
     # Track which UIDs are charger sensors (need availability template)
-    charger_uids = {"charger_voltage", "charger_current", "charger_state", "charger_error"}
+    charger_uids = {"charger_voltage", "charger_current", "charger_power", "charger_state", "charger_error"}
 
     for name, uid, tpl, unit, dc, icon in sensors:
         uid_full = f"{device_name}_{uid}"
@@ -432,6 +449,7 @@ def main():
                 "runtime_h": runtime_h,
                 "outage_duration_min": status["outage_duration_min"],
                 "network_mode": status["network_mode"],
+                "local_ip": _get_local_ip(),
                 "monitor_source": reading.source,
             }
             # Add charger fields only when present (avoids publishing
