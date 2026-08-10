@@ -1,4 +1,8 @@
 # reefbeat⚡Backup
+> Part of the [**ReefTech Project Ecosystem**](https://elwinmage.github.io/reeftank/)
+<p align="center">
+  <img src="icon.png"  width="50%"/>
+</p>
 
 **🇫🇷 Français** · [🇬🇧 English](README.md)
 
