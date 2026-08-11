@@ -76,5 +76,41 @@ for var, want in expected.items():
     good = got == want
     ok &= good
     print(f"  {'OK ' if good else 'FAIL'} {var:30} -> {got or '(empty)'}")
+# ---- 4. The period is always read from the service ----------------------
+print("\ntest period is read from the service:")
+tpl = env.from_string(bp["variables"]["v_test_period_months"])
+for label, dev_state, want in [
+    ("service says 6      ", "6", 6),
+    ("service says 1      ", "1", 1),
+    ("service unavailable ", "unavailable", 3),
+]:
+    got = int(tpl.render(v_test_period_entity="number.x",
+                         states=lambda e: dev_state).strip())
+    good = got == want
+    ok &= good
+    print(f"  {'OK ' if good else 'FAIL'} {label} -> {got} (want {want})")
+
+# ---- 5. The setpoint is written only on the sync trigger ----------------
+print("\nperiod setpoint is write-only, on reload:")
+first = bp["action"][0]
+checks = [
+    ("gated on the sync trigger", first["if"][0].get("id") == "sync"),
+    ("stops before running a test", "stop" in first["then"][-1]),
+    ("never read back into the period",
+     "v_test_period_setpoint" not in bp["variables"]["v_test_period_months"]),
+    ("sync trigger bypasses scheduling",
+     bp["condition"][0]["conditions"][0] == {"condition": "trigger", "id": "sync"}),
+    ("scheduled runs keep all conditions",
+     len(bp["condition"][0]["conditions"][1]["conditions"]) == 4),
+    ("an actual overwrite is traced in the logbook",
+     any(s.get("service") == "logbook.log"
+         for s in first["then"][0]["then"])),
+    ("no write when the setpoint is 0",
+     "> 0" in first["then"][0]["if"][0]["value_template"]),
+]
+for label, good in checks:
+    ok &= good
+    print(f"  {'OK ' if good else 'FAIL'} {label}")
+
 print("\nALL RESOLVED" if ok else "\nRESOLUTION FAILED")
 sys.exit(0 if ok else 1)

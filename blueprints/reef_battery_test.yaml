@@ -101,6 +101,31 @@ blueprint:
         entity:
           domain: switch
 
+    test_period_months:
+      name: Test period (months)
+      description: >
+        How often the test runs. 1 = every month, 3 = quarterly, 6 = twice a
+        year. The period is anchored to January (month % period == 1).
+
+        The value that counts lives on the Raspberry Pi, which publishes it as
+        the "Test batterie intervalle" number. This automation always reads it
+        from there, and so does the maintenance slider in ha-reef-card.
+
+        Setting this field writes that number -- once, when the automation is
+        reloaded, which is what happens as soon as you save this form. It does
+        not overwrite the value on every run, so changing the period from the
+        card afterwards keeps working.
+
+        Leave it at 0 to write nothing and simply use whatever the service
+        already holds.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 12
+          step: 1
+          mode: slider
+
     backup_device:
       name: Backup system
       description: >
@@ -296,10 +321,12 @@ variables:
     {%- endfor -%}
     {{ ns.found }}
 
-  # The interval lives on the Pi, not in this blueprint: the number entity is
-  # published by the service over MQTT and written back through its command
-  # topic, so the slider in ha-reef-card and this automation always agree.
-  # Falls back to quarterly when the service is down.
+  # Only ever written to the service, never read back from here: the Pi holds
+  # the reference value.
+  v_test_period_setpoint: !input test_period_months
+
+  # Always read from the service. Falls back to quarterly when it is down or
+  # the entity is unavailable, so the month condition can never divide by zero.
   v_test_period_months: >-
     {{ states(v_test_period_entity) | int(3) }}
   v_test_duration_min: !input test_duration_min
@@ -333,55 +360,104 @@ trigger:
   # day (weekday occurrence within the right month period).
   - platform: time
     at: !input test_time
+    id: scheduled
+
+  # Saving this form reloads the automations, which is the one moment the
+  # period set above should be written to the service. Doing it on every run
+  # instead would silently undo any change made from ha-reef-card.
+  - platform: event
+    event_type: automation_reloaded
+    id: sync
 
 condition:
-  # 1. Right weekday?
-  - condition: template
-    value_template: "{{ now().weekday() == (v_test_weekday | int) }}"
+  # The sync trigger skips every scheduling condition: it does not run a test,
+  # it only pushes the period. The action sequence stops right after.
+  - condition: or
+    conditions:
+      - condition: trigger
+        id: sync
+      - condition: and
+        conditions:
+          # 1. Right weekday?
+          - condition: template
+            value_template: "{{ now().weekday() == (v_test_weekday | int) }}"
 
-  # 2. Right occurrence of that weekday in the month?
-  #
-  # For 1st / 2nd / 3rd / 4th: the day-of-month falls in
-  #   [(N-1)*7 + 1 ... N*7]
-  # For "last": no other matching weekday remains in the month, i.e.
-  #   day + 7 > days_in_month.
-  - condition: template
-    value_template: >-
-      {%- set today = now().day -%}
-      {%- set month = now().month -%}
-      {%- set year = now().year -%}
-      {# Compute how many days in the current month #}
-      {%- set next_month = month + 1 if month < 12 else 1 -%}
-      {%- set next_year = year if month < 12 else year + 1 -%}
-      {%- set last_of_month_ts =
-            as_timestamp(strptime(
-              '%d-%02d-01' | format(next_year, next_month),
-              '%Y-%m-%d')) - 86400 -%}
-      {%- set days_in_month = last_of_month_ts | timestamp_custom('%d') | int -%}
-      {%- if v_test_weekday_occurrence == 'last' -%}
-        {{ today + 7 > days_in_month }}
-      {%- else -%}
-        {%- set n = v_test_weekday_occurrence | int -%}
-        {{ ((n - 1) * 7 + 1) <= today <= (n * 7) }}
-      {%- endif -%}
+          # 2. Right occurrence of that weekday in the month?
+          #
+          # For 1st / 2nd / 3rd / 4th: the day-of-month falls in
+          #   [(N-1)*7 + 1 ... N*7]
+          # For "last": no other matching weekday remains in the month, i.e.
+          #   day + 7 > days_in_month.
+          - condition: template
+            value_template: >-
+              {%- set today = now().day -%}
+              {%- set month = now().month -%}
+              {%- set year = now().year -%}
+              {# Compute how many days in the current month #}
+              {%- set next_month = month + 1 if month < 12 else 1 -%}
+              {%- set next_year = year if month < 12 else year + 1 -%}
+              {%- set last_of_month_ts =
+                    as_timestamp(strptime(
+                      '%d-%02d-01' | format(next_year, next_month),
+                      '%Y-%m-%d')) - 86400 -%}
+              {%- set days_in_month = last_of_month_ts | timestamp_custom('%d') | int -%}
+              {%- if v_test_weekday_occurrence == 'last' -%}
+                {{ today + 7 > days_in_month }}
+              {%- else -%}
+                {%- set n = v_test_weekday_occurrence | int -%}
+                {{ ((n - 1) * 7 + 1) <= today <= (n * 7) }}
+              {%- endif -%}
 
-  # 3. Right month within the period?
-  # E.g. period=3 -> only run in months 1, 4, 7, 10.
-  - condition: template
-    value_template: >-
-      {%- set period = v_test_period_months | int(3) -%}
-      {%- set period = period if period > 0 else 3 -%}
-      {{ ((now().month - 1) % period) == 0 }}
+          # 3. Right month within the period?
+          # E.g. period=3 -> only run in months 1, 4, 7, 10.
+          - condition: template
+            value_template: >-
+              {%- set period = v_test_period_months | int(3) -%}
+              {%- set period = period if period > 0 else 3 -%}
+              {{ ((now().month - 1) % period) == 0 }}
 
-  # 4. Person at home (safety: never run a test in an empty house).
-  - condition: state
-    entity_id: !input presence_person
-    state: home
+          # 4. Person at home (safety: never run a test in an empty house).
+          - condition: state
+            entity_id: !input presence_person
+            state: home
 
 action:
   # ------------------------------------------------------------------
   # 1. Ask the user to confirm
   # ------------------------------------------------------------------
+  - alias: On reload, write the configured period to the service and stop
+    # 0 means "leave the service alone". The comparison avoids a pointless
+    # MQTT round trip when the value already matches.
+    if:
+      - condition: trigger
+        id: sync
+    then:
+      - if:
+          - condition: template
+            value_template: >-
+              {{ (v_test_period_setpoint | int(0)) > 0
+                 and v_test_period_entity != ''
+                 and states(v_test_period_entity) | int(0)
+                     != (v_test_period_setpoint | int(0)) }}
+        then:
+          # Traced in the logbook because this is the one moment the blueprint
+          # overrules the card. Reloading the automations after changing the
+          # period from ha-reef-card would otherwise revert it with nothing to
+          # show for it.
+          - service: logbook.log
+            data:
+              name: "Reef Battery Test"
+              message: >-
+                Test period written from the blueprint:
+                {{ states(v_test_period_entity) | int(0) }} ->
+                {{ v_test_period_setpoint | int(0) }} months.
+          - service: number.set_value
+            target:
+              entity_id: "{{ v_test_period_entity }}"
+            data:
+              value: "{{ v_test_period_setpoint | int(0) }}"
+      - stop: "Period synced, no test to run"
+
   - alias: Send confirmation request
     service: "notify.{{ v_notify_target }}"
     data:
