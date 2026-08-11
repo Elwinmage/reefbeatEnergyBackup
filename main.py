@@ -43,6 +43,9 @@ from notifier import create_notifier
 from updater import create_updater
 from lte_monitor import create_lte_monitor
 from energy import EnergyAccumulator, publish_energy_discovery, publish_energy_state
+from maintenance import BatteryTestMaintenance
+from device_info import build_device_info
+from test_controls import TestControls
 
 
 # =============================================================================
@@ -124,13 +127,7 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
     base = mqtt_cfg.get("base_topic", "homeassistant")
     backend = cfg.get("monitoring", {}).get("backend", "ina226")
 
-    device_info = {
-        "identifiers": [device_name],
-        "name": "Reef Battery Backup",
-        "manufacturer": "KEPWORTH",
-        "model": "LiFePO4 24V 60Ah",
-        "sw_version": f"monitor:{backend}",
-    }
+    device_info = build_device_info(device_name, f"monitor:{backend}")
 
     sensors = [
         ("Tension batterie",  "voltage",        "{{ value_json.voltage }}",              "V",   "voltage", "mdi:flash"),
@@ -164,6 +161,15 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
     # Track which UIDs are charger sensors (need availability template)
     charger_uids = {"charger_voltage", "charger_current", "charger_power", "charger_state", "charger_error"}
 
+    # Stable role markers. The reef_battery_test blueprint and ha-reef-card
+    # look these up by attribute, which survives the user renaming an entity
+    # (matching on entity_id would not).
+    roles = {
+        "soc": "battery_soc",
+        "voltage": "battery_voltage",
+        "power": "battery_power",
+    }
+
     for name, uid, tpl, unit, dc, icon in sensors:
         uid_full = f"{device_name}_{uid}"
         payload = {
@@ -178,6 +184,13 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
             payload["unit_of_measurement"] = unit
         if dc:
             payload["device_class"] = dc
+        if uid in roles:
+            # json_attributes_template only has to render a JSON object; a
+            # constant one is what publishes the marker.
+            payload["json_attributes_topic"] = (
+                f"{base}/sensor/{device_name}/state")
+            payload["json_attributes_template"] = json.dumps(
+                {"reef_role": roles[uid]})
         # Add availability for charger sensors
         if uid in charger_uids:
             payload["availability_topic"] = f"{base}/sensor/{device_name}/state"
@@ -297,6 +310,32 @@ def main():
     # --- LTE Monitor (4G modem status + MQTT sensors) ---
     lte_monitor = create_lte_monitor(cfg, mqtt_client)
     lte_monitor.start()
+
+    # --- Maintenance task (battery test, surfaced in ha-reef-card) ---
+    maintenance = None
+    if mqtt_client:
+        maintenance = BatteryTestMaintenance(
+            mqtt_client,
+            cfg.get("mqtt", {}),
+            build_device_info(
+                cfg.get("mqtt", {}).get("device_name", "reef_battery")),
+            persist_path=cfg.get("maintenance", {}).get(
+                "persist_path",
+                "/var/lib/reefbeat-energy-backup/maintenance.json"),
+        )
+        maintenance.start()
+
+    # --- Functional test controls (pump command test, Wi-Fi cut) ---
+    test_controls = None
+    if mqtt_client:
+        test_controls = TestControls(
+            mqtt_client,
+            cfg.get("mqtt", {}),
+            build_device_info(
+                cfg.get("mqtt", {}).get("device_name", "reef_battery")),
+            pump, network,
+        )
+        test_controls.start()
 
     # --- Outage detector ---
     detector = create_outage_detector(cfg)
@@ -480,6 +519,10 @@ def main():
                 energy_publish_counter = 0
                 publish_energy_state(
                     mqtt_buffer, mqtt_cfg, energy.get_state())
+                if maintenance:
+                    maintenance.publish_state()
+                if test_controls:
+                    test_controls.publish_state()
 
             # Console
             pwr = "⚡" if status["power_state"] == "mains" else "🔋"

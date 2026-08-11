@@ -19,6 +19,7 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
+from device_info import build_device_info
 
 
 # =============================================================================
@@ -152,12 +153,7 @@ def publish_energy_discovery(mqtt_client, mqtt_cfg: dict):
     device_name = mqtt_cfg.get("device_name", "reef_battery")
     base = mqtt_cfg.get("base_topic", "homeassistant")
 
-    device_info = {
-        "identifiers": [device_name],
-        "name": "Reef Battery Backup",
-        "manufacturer": "reefbeat Backup",
-        "model": "Energy Backup System",
-    }
+    device_info = build_device_info(device_name)
 
     sensors = [
         ("energy_charged", "Energie chargee", "mdi:battery-charging",

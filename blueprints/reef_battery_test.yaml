@@ -66,18 +66,6 @@ blueprint:
             - { label: "4th",  value: "4" }
             - { label: "Last", value: "last" }
 
-    test_period_months:
-      name: Test period (months)
-      description: >
-        How often the test runs. 1 = every month, 3 = quarterly,
-        6 = twice a year. The period is anchored to January
-        (month % period == 1).
-      default: 3
-      selector:
-        number:
-          min: 1
-          max: 12
-          step: 1
 
     # ----------------------------------------------------------------
     # Pre-conditions
@@ -113,28 +101,20 @@ blueprint:
         entity:
           domain: switch
 
-    soc_sensor:
-      name: Battery SoC sensor
-      default: sensor.reef_battery_soc
-      selector:
-        entity:
-          domain: sensor
-
-    voltage_sensor:
-      name: Battery voltage sensor
-      default: sensor.reef_battery_voltage
-      selector:
-        entity:
-          domain: sensor
-
-    power_sensor:
-      name: Battery power sensor (W)
+    backup_device:
+      name: Backup system
       description: >
-        Used to forecast the predicted SoC drop during the test.
-      default: sensor.reef_battery_power
+        The reefbeat-energy-backup device. Every entity this blueprint needs
+        -- SoC, voltage, power, and the three maintenance entities -- is
+        resolved from it at runtime by looking up the `reef_role` attribute
+        the service publishes. Renaming an entity therefore does not break
+        the automation.
       selector:
-        entity:
-          domain: sensor
+        device:
+          filter:
+            - integration: mqtt
+              manufacturer: "reefbeat⚡Backup"
+              model: Energy Backup System
 
     # ----------------------------------------------------------------
     # Test parameters
@@ -223,17 +203,6 @@ blueprint:
       selector:
         boolean:
 
-    test_plan_switch:
-      name: Pump command test switch entity
-      description: >
-        The switch exposed by the service
-        (switch.<device>_test_plan). Only used when the option above is
-        enabled.
-      default: switch.reef_battery_test_plan
-      selector:
-        entity:
-          domain: switch
-
     pump_test_hold_seconds:
       name: How long to hold the test level (seconds)
       description: >
@@ -253,7 +222,8 @@ blueprint:
         Optionally cut the Pi's Wi-Fi for this many minutes during the
         test to observe the network failover (client → rejoin → hotspot)
         and the notification path. 0 disables it. The link is always
-        restored automatically, even if the cut value is left non-zero.
+        restored automatically, even if the cut value is left non-zero, and
+        the number entity returns to 0 on its own once it is back.
       default: 0
       selector:
         number:
@@ -262,16 +232,6 @@ blueprint:
           step: 1
           unit_of_measurement: min
 
-    wifi_cut_number:
-      name: Wi-Fi cut number entity
-      description: >
-        The number entity exposed by the service
-        (number.<device>_wifi_cut_min). Only used when the minutes above
-        are greater than 0.
-      default: number.reef_battery_wifi_cut_min
-      selector:
-        entity:
-          domain: number
 
 # Variables propagate the inputs so subsequent steps can read them
 # through plain Jinja templates -- !input cannot be used directly
@@ -279,21 +239,94 @@ blueprint:
 variables:
   v_test_weekday: !input test_weekday
   v_test_weekday_occurrence: !input test_weekday_occurrence
-  v_test_period_months: !input test_period_months
+  v_backup_device: !input backup_device
+
+  # Entities are resolved by `reef_role` rather than by entity_id: the service
+  # publishes that marker on each one, so a user renaming "Tension batterie"
+  # cannot silently break the test. An explicit loop is used instead of a
+  # select() filter to stay compatible with older Home Assistant versions.
+  v_soc_sensor_id: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'battery_soc' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+  v_voltage_sensor_id: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'battery_voltage' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+  v_power_sensor_id: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'battery_power' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+  v_maintenance_button: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'maint_battery_discharge_test' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+  v_test_period_entity: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role')
+             == 'maint_battery_discharge_test_interval_months' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+  v_maintenance_notify_switch: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role')
+             == 'maint_battery_discharge_test_notify' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
+
+  # The interval lives on the Pi, not in this blueprint: the number entity is
+  # published by the service over MQTT and written back through its command
+  # topic, so the slider in ha-reef-card and this automation always agree.
+  # Falls back to quarterly when the service is down.
+  v_test_period_months: >-
+    {{ states(v_test_period_entity) | int(3) }}
   v_test_duration_min: !input test_duration_min
   v_soc_drop_tolerance_pct: !input soc_drop_tolerance_pct
   v_voltage_floor_v: !input voltage_floor_v
   v_voltage_plateau_min_v: !input voltage_plateau_min_v
   v_battery_capacity_wh: !input battery_capacity_wh
   v_notify_target: !input notify_target
-  v_soc_sensor_id: !input soc_sensor
-  v_voltage_sensor_id: !input voltage_sensor
-  v_power_sensor_id: !input power_sensor
   v_use_test_plan: !input run_pump_command_test
-  v_test_plan_switch_id: !input test_plan_switch
+  v_test_plan_switch_id: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'test_plan' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
   v_pump_test_hold_s: !input pump_test_hold_seconds
   v_wifi_cut_minutes: !input wifi_cut_minutes
-  v_wifi_cut_number_id: !input wifi_cut_number
+  v_wifi_cut_number_id: >-
+    {%- set ns = namespace(found='') -%}
+    {%- for e in device_entities(v_backup_device) -%}
+      {%- if state_attr(e, 'reef_role') == 'wifi_cut_min' -%}
+        {%- set ns.found = e -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ ns.found }}
 
 trigger:
   # Fire at the chosen time every day; conditions filter for the right
@@ -336,7 +369,9 @@ condition:
   # E.g. period=3 -> only run in months 1, 4, 7, 10.
   - condition: template
     value_template: >-
-      {{ ((now().month - 1) % (v_test_period_months | int)) == 0 }}
+      {%- set period = v_test_period_months | int(3) -%}
+      {%- set period = period if period > 0 else 3 -%}
+      {{ ((now().month - 1) % period) == 0 }}
 
   # 4. Person at home (safety: never run a test in an empty house).
   - condition: state
@@ -421,7 +456,8 @@ action:
   - alias: Run the pump command test (apply test level, hold, restore)
     if:
       - condition: template
-        value_template: "{{ v_use_test_plan }}"
+        value_template: >-
+          {{ v_use_test_plan and v_test_plan_switch_id != '' }}
     then:
       - alias: Apply the functional test level
         service: switch.turn_on
@@ -449,7 +485,9 @@ action:
   - alias: Optionally cut Wi-Fi to exercise the network failover
     if:
       - condition: template
-        value_template: "{{ (v_wifi_cut_minutes | float(0)) > 0 }}"
+        value_template: >-
+          {{ (v_wifi_cut_minutes | float(0)) > 0
+             and v_wifi_cut_number_id != '' }}
     then:
       - service: number.set_value
         target:
@@ -458,10 +496,15 @@ action:
           value: "{{ v_wifi_cut_minutes }}"
 
   - alias: Wait for the duration, abort early on voltage floor breach
+    # A template trigger rather than numeric_state: the voltage entity is now
+    # resolved from the device at runtime, and a trigger's entity_id cannot be
+    # templated. wait_for_trigger sits inside the action script, so it can read
+    # the variables defined above.
     wait_for_trigger:
-      - platform: numeric_state
-        entity_id: !input voltage_sensor
-        below: !input voltage_floor_v
+      - platform: template
+        value_template: >-
+          {{ states(v_voltage_sensor_id) | float(999)
+             < (v_voltage_floor_v | float) }}
     timeout:
       minutes: !input test_duration_min
     continue_on_timeout: true
@@ -516,6 +559,33 @@ action:
       overall_anomalous: >-
         {{ (not forecast_ok) or (not voltage_profile_ok) }}
 
+  - alias: Mark the maintenance task as done
+    # Resets the countdown shown in ha-reef-card. Done before the notification
+    # so a failing notify service cannot leave the task looking overdue after
+    # a test that actually ran.
+    service: button.press
+    target:
+      entity_id: "{{ v_maintenance_button }}"
+
+  - alias: Log to HA logbook
+    service: logbook.log
+    data:
+      name: "Reef Battery Test"
+      message: >-
+        Discharge test: {{ soc_drop }}% drop in {{ duration_actual_min }} min,
+        forecast {{ "OK" if forecast_ok else "DEV" }} (delta {{ drop_deviation }}%),
+        voltage profile {{ "OK" if voltage_profile_ok else "SUSPECT" }},
+        extrapolated to 20% SoC: {{ extrapolated_runtime_to_20pct_h }}h.
+        {% if aborted_early %}ABORTED on voltage floor.{% endif %}
+      domain: automation
+
+  - alias: Skip the summary when the task is muted in the card
+    # An aborted test is a safety event, not routine maintenance chatter, so
+    # it is reported even when the task is muted.
+    condition: template
+    value_template: >-
+      {{ aborted_early or states(v_maintenance_notify_switch) != 'off' }}
+
   - alias: Send the summary notification
     service: "notify.{{ v_notify_target }}"
     data:
@@ -548,15 +618,3 @@ action:
         {% endif %}
       data:
         tag: reef_battery_test_summary
-
-  - alias: Log to HA logbook
-    service: logbook.log
-    data:
-      name: "Reef Battery Test"
-      message: >-
-        Discharge test: {{ soc_drop }}% drop in {{ duration_actual_min }} min,
-        forecast {{ "OK" if forecast_ok else "DEV" }} (delta {{ drop_deviation }}%),
-        voltage profile {{ "OK" if voltage_profile_ok else "SUSPECT" }},
-        extrapolated to 20% SoC: {{ extrapolated_runtime_to_20pct_h }}h.
-        {% if aborted_early %}ABORTED on voltage floor.{% endif %}
-      domain: automation

@@ -35,6 +35,8 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
+from device_info import build_device_info
+
 try:
     import requests
     HAS_REQUESTS = True
@@ -441,12 +443,7 @@ class LteMonitor:
         device_name = self._mqtt_cfg.get("device_name", "reef_battery")
         base = self._mqtt_cfg.get("base_topic", "homeassistant")
 
-        device_info = {
-            "identifiers": [device_name],
-            "name": "Reef Battery Backup",
-            "manufacturer": "reefbeat Backup",
-            "model": "Energy Backup System",
-        }
+        device_info = build_device_info(device_name)
 
         # Sensor definitions: (suffix, name, icon, unit, device_class, entity_category)
         sensors = [

@@ -27,6 +27,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
+from device_info import build_device_info
 
 try:
     import requests
@@ -406,12 +407,7 @@ class Updater:
         device = self._mqtt_cfg.get("device_name", "reef_battery")
         base = self._mqtt_cfg.get("base_topic", "homeassistant")
 
-        device_info = {
-            "identifiers": [device],
-            "name": "Reef Battery Backup",
-            "manufacturer": "reefbeat⚡Backup",
-            "model": "Energy Backup System",
-        }
+        device_info = build_device_info(device)
 
         # HA update entity discovery
         discovery = {
