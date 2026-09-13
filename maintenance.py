@@ -164,6 +164,10 @@ class BatteryTestMaintenance:
             "device": self._device_info,
             "command_topic": self._topic("button", self._button_uid, "command"),
             "payload_press": "PRESS",
+            # Publish the press at QoS 1 so it is queued for us if the broker
+            # link is briefly down, rather than lost. Paired with the QoS 1
+            # subscription in start().
+            "qos": 1,
             # The card reads everything from these attributes.
             "json_attributes_topic": attrs_topic,
             "entity_category": "config",
@@ -176,6 +180,7 @@ class BatteryTestMaintenance:
             "device": self._device_info,
             "state_topic": self._topic("number", self._number_uid, "state"),
             "command_topic": self._topic("number", self._number_uid, "command"),
+            "qos": 1,
             "json_attributes_topic": self._topic(
                 "number", self._number_uid, "attributes"
             ),
@@ -194,6 +199,7 @@ class BatteryTestMaintenance:
             "device": self._device_info,
             "state_topic": self._topic("switch", self._switch_uid, "state"),
             "command_topic": self._topic("switch", self._switch_uid, "command"),
+            "qos": 1,
             "json_attributes_topic": self._topic(
                 "switch", self._switch_uid, "attributes"
             ),
@@ -273,7 +279,13 @@ class BatteryTestMaintenance:
             self._topic("switch", self._switch_uid, "command"): self._on_notify,
         }
         for topic, handler in handlers.items():
-            self._client.subscribe(topic)
+            # QoS 1 so a press issued while we are briefly offline is queued by
+            # the broker (persistent session, see create_mqtt_client) and
+            # delivered on reconnect, instead of being dropped as a
+            # fire-and-forget QoS 0 message. Requires the matching `qos: 1` in
+            # the discovery config below so HA publishes the command at QoS 1
+            # too -- effective QoS is the min of publish and subscribe.
+            self._client.subscribe(topic, qos=1)
             self._client.message_callback_add(topic, handler)
 
         self.publish_discovery()

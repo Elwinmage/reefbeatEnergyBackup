@@ -69,7 +69,25 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
     host = mqtt_cfg.get("host", "localhost")
     port = mqtt_cfg.get("port", 1883)
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    # Persistent session (stable client_id + clean_session=False) so the broker
+    # remembers our subscriptions AND queues QoS>=1 messages for us across brief
+    # disconnects. This matters on a failover box whose link flaps by design:
+    # paho does NOT re-subscribe after a reconnect on a clean session, and the
+    # broker discards a clean session's subscriptions. Once the link drops even
+    # once, inbound command topics (e.g. the maintenance button) go silently
+    # unsubscribed -- HA still registers the press optimistically, but it never
+    # reaches us. A random client_id would additionally start a fresh session on
+    # every boot, defeating the queue.
+    client_id = mqtt_cfg.get(
+        "client_id",
+        f"reefbeat-energy-backup-"
+        f"{mqtt_cfg.get('device_name', 'reef_battery')}",
+    )
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id=client_id,
+        clean_session=False,
+    )
     user = mqtt_cfg.get("user")
     if user:
         client.username_pw_set(user, mqtt_cfg.get("password"))
