@@ -54,4 +54,4 @@ jobs:
           tag: ${{ github.event.inputs.tag }}
           name: "reefbeat⚡Backup ${{ github.event.inputs.tag }}"
           generateReleaseNotes: true
-          prerelease: false
+          prerelease: true
