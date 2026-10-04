@@ -962,6 +962,8 @@ You can visualize the battery system's power flows in a Home Assistant dashboard
 
 The card shows real-time power flows between the grid (mains), the battery, and the individual pumps (ReefWave gyres, ReefRun return pump, DC Skimmer) with dynamic icons that change based on pump state.
 
+> 💡 **With [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) nothing below has to be written by hand.** Pick the `Reef Battery Backup` device in the card: it finds the sensors of the service and your pumps, and configures Power Flow Card Plus by itself (Power Flow Card Plus still has to be installed; the card links to it when it is missing). The manual configuration below is for a dashboard without ha-reef-card.
+
 #### Template sensors for pump nodes
 
 Add these template sensors to your `configuration.yaml` to aggregate pump speeds for the Power Flow Card. Adapt entity IDs to match your devices:
@@ -1053,7 +1055,6 @@ card:
       state_of_charge: sensor.reef_battery_backup_soc_batterie
       name: LiFePO4 Battery
       icon: mdi:battery
-      invert_state: true
       color:
         consumption: "#4caf50"
         production: "#ff9800"
@@ -1067,11 +1068,16 @@ card:
       icon: mdi:fishbowl-outline
       color_value: true
     grid:
-      entity: sensor.reef_battery_backup_tension_chargeur
+      # A power in W (Victron charger): not the charger voltage
+      entity: sensor.reef_battery_backup_puissance_chargeur
       name: Mains
       icon: mdi:transmission-tower
       color_value: true
       display_state: one_way
+      power_outage:
+        entity: sensor.reef_battery_backup_etat_secteur
+        state_alert: battery
+        label_alert: Outage
     individual:
       - entity: sensor.rswave_gyre_1_speed
         name: Gyre 1
@@ -1091,13 +1097,13 @@ card:
         secondary_info:
           template: |
             {{ state_attr('sensor.rswave_gyre_2_speed', 'direction') }}
-      - entity: sensor.rsrun_return_pump_speed
+      - entity: number.rsrun_<your_pump_id>_pump_1_vitesse
         name: Return pump
         icon: ${PUMP_ICON}
         color: "#2196f3"
         unit_of_measurement: "%"
         display_zero: true
-      - entity: sensor.rsrun_skimmer_speed
+      - entity: number.rsrun_<your_pump_id>_pump_2_vitesse
         name: Skimmer
         icon: ${SKIMMER_ICON}
         color: "#ff2030"
@@ -1109,6 +1115,13 @@ card:
     transparency: 50
   use_new_flow_rate_model: true
 ```
+
+Notes on the values:
+
+- **Battery**: `sensor.reef_battery_backup_puissance` is positive while the battery discharges, which is what Power Flow Card Plus expects from a single battery entity. Do **not** set `invert_state: true`: charge and discharge would be swapped and the aquarium node would stay at 0 W during an outage.
+- **Mains**: the `grid` entity must be a power in W. `sensor.reef_battery_backup_puissance_chargeur` only exists with a Victron charger (level 3); without it, leave the `grid` block out. The charger feeds both the battery and the pumps, so the card shows `charger power − battery charge` on the aquarium node.
+- **Aquarium**: the value of the `home` node is computed by the card. Its `entity` (the consumed energy counter) is only what a click on the node opens.
+- **ReefRun pumps**: the speed `number` entities are used directly, no template sensor is needed for them.
 
 > 💡 The `redsea:gyre-*`, `redsea:pump-*` and `redsea:skimmer-*` icons come from the [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) custom icons pack.
 

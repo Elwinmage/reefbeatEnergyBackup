@@ -836,6 +836,8 @@ Vous pouvez visualiser les flux d'énergie du système batterie dans un tableau 
 
 La carte affiche les flux de puissance en temps réel entre le secteur, la batterie et les pompes individuelles (gyres ReefWave, pompe de remontée ReefRun, écumeur DC) avec des icônes dynamiques qui changent selon l'état des pompes.
 
+> 💡 **Avec [ha-reef-card](https://github.com/Elwinmage/ha-reef-card), rien de ce qui suit n'est à écrire à la main.** Sélectionnez l'appareil `Reef Battery Backup` dans la carte : elle trouve les capteurs du service et vos pompes, et configure Power Flow Card Plus toute seule (Power Flow Card Plus doit tout de même être installée ; la carte donne le lien quand elle manque). La configuration manuelle ci-dessous sert pour un tableau de bord sans ha-reef-card.
+
 #### Capteurs template pour les nœuds pompes
 
 Ajoutez ces capteurs template dans votre `configuration.yaml` pour agréger les vitesses de pompes. Adaptez les entity IDs à vos appareils :
@@ -927,7 +929,6 @@ card:
       state_of_charge: sensor.reef_battery_backup_soc_batterie
       name: Batterie LiFePO4
       icon: mdi:battery
-      invert_state: true
       color:
         consumption: "#4caf50"
         production: "#ff9800"
@@ -941,11 +942,16 @@ card:
       icon: mdi:fishbowl-outline
       color_value: true
     grid:
-      entity: sensor.reef_battery_backup_tension_chargeur
+      # A power in W (Victron charger): not the charger voltage
+      entity: sensor.reef_battery_backup_puissance_chargeur
       name: Secteur
       icon: mdi:transmission-tower
       color_value: true
       display_state: one_way
+      power_outage:
+        entity: sensor.reef_battery_backup_etat_secteur
+        state_alert: battery
+        label_alert: Coupure
     individual:
       - entity: sensor.rswave_gyre_1_vitesse
         name: Gyre 1
@@ -965,13 +971,13 @@ card:
         secondary_info:
           template: |
             {{ state_attr('sensor.rswave_gyre_2_vitesse', 'direction') }}
-      - entity: sensor.pompe_retour_vitesse
+      - entity: number.rsrun_<your_pump_id>_pump_1_vitesse
         name: Pompe retour
         icon: ${PUMP_ICON}
         color: "#2196f3"
         unit_of_measurement: "%"
         display_zero: true
-      - entity: sensor.ecumeur_vitesse
+      - entity: number.rsrun_<your_pump_id>_pump_2_vitesse
         name: Écumeur
         icon: ${SKIMMER_ICON}
         color: "#ff2030"
@@ -983,6 +989,13 @@ card:
     transparency: 50
   use_new_flow_rate_model: true
 ```
+
+Remarques sur les valeurs :
+
+- **Batterie** : `sensor.reef_battery_backup_puissance` est positive quand la batterie se décharge, ce qu'attend Power Flow Card Plus d'une entité batterie unique. Ne mettez **pas** `invert_state: true` : charge et décharge seraient inversées et le nœud aquarium resterait à 0 W pendant une coupure.
+- **Secteur** : l'entité `grid` doit être une puissance en W. `sensor.reef_battery_backup_puissance_chargeur` n'existe qu'avec un chargeur Victron (niveau 3) ; sans lui, retirez le bloc `grid`. Le chargeur alimente à la fois la batterie et les pompes : la carte affiche donc `puissance chargeur − charge batterie` sur le nœud aquarium.
+- **Aquarium** : la valeur du nœud `home` est calculée par la carte. Son `entity` (le compteur d'énergie consommée) n'est que ce qu'ouvre un clic sur le nœud.
+- **Pompes ReefRun** : les entités `number` de vitesse sont utilisées directement, aucun capteur template n'est nécessaire pour elles.
 
 > 💡 Les icônes `redsea:gyre-*`, `redsea:pump-*` et `redsea:skimmer-*` proviennent du pack d'icônes personnalisées [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component).
 

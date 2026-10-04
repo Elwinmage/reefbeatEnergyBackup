@@ -166,10 +166,15 @@ def publish_energy_discovery(mqtt_client, mqtt_cfg: dict):
 
     for suffix, name, icon, json_key in sensors:
         uid = f"{device_name}_{suffix}"
+        state_topic = f"{base}/sensor/{device_name}/energy/state"
         discovery = {
             "name": name,
             "unique_id": uid,
-            "state_topic": f"{base}/sensor/{device_name}/energy/state",
+            "state_topic": state_topic,
+            # Stable role marker (see publish_ha_discovery in main.py): a
+            # constant JSON object is all the template has to render.
+            "json_attributes_topic": state_topic,
+            "json_attributes_template": json.dumps({"reef_role": suffix}),
             "value_template": f"{{{{ value_json.{json_key} }}}}",
             "unit_of_measurement": "kWh",
             "device_class": "energy",

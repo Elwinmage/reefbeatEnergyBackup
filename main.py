@@ -182,10 +182,24 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
     # Stable role markers. The reef_battery_test blueprint and ha-reef-card
     # look these up by attribute, which survives the user renaming an entity
     # (matching on entity_id would not).
+    #
+    # Every sensor carries one: the card's energy backup view finds the
+    # power flow sources (battery, mains, charger, runtime) the same way.
     roles = {
         "soc": "battery_soc",
         "voltage": "battery_voltage",
         "power": "battery_power",
+        "current": "battery_current",
+        "power_state": "power_state",
+        "pump_intensity": "pump_intensity",
+        "runtime": "runtime",
+        "outage_duration": "outage_duration",
+        "network_mode": "network_mode",
+        "charger_voltage": "charger_voltage",
+        "charger_current": "charger_current",
+        "charger_power": "charger_power",
+        "charger_state": "charger_state",
+        "charger_error": "charger_error",
     }
 
     for name, uid, tpl, unit, dc, icon in sensors:
