@@ -15,6 +15,7 @@ import signal
 import socket
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -128,6 +129,48 @@ def setup_mqtt(cfg: dict, buffer: "MqttBuffer") -> Optional[mqtt.Client]:
     return client
 
 
+def _fetch_hwid(ip: str) -> Optional[str]:
+    """Ask a ReefBeat device for its hardware id. Best effort: None when the
+    device does not answer."""
+    try:
+        with urllib.request.urlopen(
+                f"http://{ip}/device-info", timeout=2) as resp:
+            return json.loads(resp.read().decode()).get("hwid")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def controlled_pumps(cfg: dict) -> list:
+    """Describe the pumps this service drives, for Home Assistant.
+
+    Published as the `controllers` attribute of the pump intensity sensor:
+    ha-reef-card reads it to draw those pumps, and only those, in its power
+    flow view. A pump removed from the configuration (dead controller,
+    re-run of configure.py) therefore leaves the view by itself.
+
+    Each entry holds the device `name`, its `hwid` (what Home Assistant
+    registers a Red Sea device under) and, for a ReefRun, the `pump`
+    channel (1 or 2). A configuration written before the wizard kept the
+    hwid gets it from the device itself; when the device does not answer,
+    the entry goes without and the card falls back to the name.
+    """
+    pumps = []
+    hwids = {}
+    for ctrl in cfg.get("pump_control", {}).get("controllers", []):
+        ip = ctrl.get("ip")
+        hwid = ctrl.get("hwid")
+        if not hwid and ip:
+            if ip not in hwids:
+                hwids[ip] = _fetch_hwid(ip)
+            hwid = hwids[ip]
+        entry = {"name": ctrl.get("name"), "hwid": hwid}
+        index = str(ctrl.get("pump_index") or "")
+        if index.startswith("pump_") and index[5:].isdigit():
+            entry["pump"] = int(index[5:])
+        pumps.append(entry)
+    return pumps
+
+
 def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
                          has_victron: bool = False):
     """Publish MQTT auto-discovery for Home Assistant.
@@ -221,8 +264,10 @@ def publish_ha_discovery(buffer: "MqttBuffer", cfg: dict,
             # constant one is what publishes the marker.
             payload["json_attributes_topic"] = (
                 f"{base}/sensor/{device_name}/state")
-            payload["json_attributes_template"] = json.dumps(
-                {"reef_role": roles[uid]})
+            attributes = {"reef_role": roles[uid]}
+            if uid == "pump_intensity":
+                attributes["controllers"] = controlled_pumps(cfg)
+            payload["json_attributes_template"] = json.dumps(attributes)
         # Add availability for charger sensors
         if uid in charger_uids:
             payload["availability_topic"] = f"{base}/sensor/{device_name}/state"
@@ -403,6 +448,17 @@ def main():
         # of jitter at low load) before computing autonomy. ~60 seconds
         # of history gives a stable enough number to be useful while
         # still reacting reasonably fast to a real outage.
+        # Console throttling. At the default 5s poll the status line was
+        # printed ~17k times a day, which is what fills up the journal: the
+        # useful content is a handful of state changes buried in it. Print
+        # every status_interval_s instead, but never hide a transition or an
+        # outage -- those are exactly the moments the log is read for.
+        console_cfg = cfg.get("console", {})
+        status_interval_s = float(console_cfg.get("status_interval_s", 60.0))
+        last_status_print = 0.0
+        last_power_state = None
+        last_network_mode = None
+
         from collections import deque
         runtime_window_s = cfg.get("runtime_window_s", 60.0)
         runtime_window_n = max(3, int(runtime_window_s / poll_interval))
@@ -556,7 +612,21 @@ def main():
                 if test_controls:
                     test_controls.publish_state()
 
-            # Console
+            # Console -- throttled, see status_interval_s above
+            now_ts = time.time()
+            on_battery = status["power_state"] != "mains"
+            changed = (status["power_state"] != last_power_state
+                       or status["network_mode"] != last_network_mode)
+            due = (now_ts - last_status_print) >= status_interval_s
+            last_power_state = status["power_state"]
+            last_network_mode = status["network_mode"]
+
+            if not (changed or on_battery or due or status_interval_s <= 0):
+                time.sleep(poll_interval)
+                continue
+
+            last_status_print = now_ts
+
             pwr = "⚡" if status["power_state"] == "mains" else "🔋"
             net_icons = {
                 "client": "🌐", "rejoin": "🔄",

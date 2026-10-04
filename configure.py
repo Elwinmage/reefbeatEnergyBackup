@@ -315,6 +315,9 @@ def probe_reefbeat(ip: str) -> Optional[Dict]:
             "ip": ip,
             "hw_model": hw_model,
             "name": data.get("name", ""),
+            # Stable hardware id: what Home Assistant registers the device
+            # under, so the card can tell which pumps this service drives.
+            "hwid": data.get("hwid"),
             "friendly": BACKUP_DEVICE_TYPES.get(hw_model, hw_model),
         }
     except Exception:
@@ -1156,6 +1159,8 @@ def run_wizard(install_dir: str):
             "hw_model": d["hw_model"],
             "type": d["hw_model"].lower().replace("rs", "reef"),
         }
+        if d.get("hwid"):
+            ctrl["hwid"] = d["hwid"]
         # Multi-pump RSRUN: include pump-specific addressing
         if d.get("pump_index"):
             ctrl["pump_index"] = d["pump_index"]      # "pump_1" / "pump_2"

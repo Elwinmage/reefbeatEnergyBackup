@@ -103,6 +103,10 @@
     },
 
     "poll_interval_s": 5.0,
+    "console": {
+        "_comment": "Seconds between status lines in the journal. State\n transitions and outages are always printed. 0 = print every poll.",
+        "status_interval_s": 60
+    },
 
     "updater": {
         "enabled": true,
