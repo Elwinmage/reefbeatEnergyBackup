@@ -45,7 +45,7 @@ The ReefTech projects fit together: the integrations bring your equipment into H
   <tr>
     <td><img src="https://raw.githubusercontent.com/Elwinmage/ha-reef-card/main/icon.png" width="64" alt="ha-reef-card" /></td>
     <td>🪸<br /><a href="https://github.com/Elwinmage/ha-reef-card"><b>ha-reef-card</b></a></td>
-    <td>Interactive graphical view of each device on your dashboard, and the only way to edit advanced schedules. Reads the three integrations above through the shared <code>reef_role</code> contract, with no card-side configuration.</td>
+    <td>Interactive graphical view of each device on your dashboard, and the only way to edit advanced schedules. Reads the three integrations above through the shared <code>reef_role</code> contract, with no card-side configuration. Also draws the power flows of reefbeatEnergyBackup.</td>
     <td>all three integrations</td>
   </tr>
   <tr>
@@ -58,7 +58,7 @@ The ReefTech projects fit together: the integrations bring your equipment into H
     <td><img src="https://raw.githubusercontent.com/Elwinmage/reefbeatEnergyBackup/main/icon.png" width="64" alt="reefbeatEnergyBackup" /></td>
     <td>⚡<br /><b>reefbeatEnergyBackup</b><br /><i>(this repository)</i></td>
     <td>Battery backup for power outages. A 24V LiFePO₄ pack driven by a Raspberry Pi, with pump speed degraded progressively according to the state of charge.</td>
-    <td>standalone, or alongside ha-reefbeat-component</td>
+    <td>standalone, or alongside ha-reefbeat-component and ha-reef-card</td>
   </tr>
 </table>
 
@@ -649,6 +649,9 @@ All sensors appear automatically in HA after MQTT discovery configs are publishe
 | `sensor.reef_battery_charger_current` | Charger output current (A) |
 | `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
 | `sensor.reef_battery_charger_error` | no_error / … |
+| `sensor.reef_battery_charger_power` | Charger output power (W) |
+
+**Stable markers.** Every measurement sensor above carries a `reef_role` attribute (`battery_power`, `battery_soc`, `power_state`, `runtime`, `charger_power`…): [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) and the battery test blueprint find the entities through it, so renaming an entity in Home Assistant breaks nothing. The pump intensity sensor also carries a `controllers` attribute listing the pumps this service drives (device name, hardware id, and the channel of a ReefRun pump): the card shows those pumps in its power flow view, and follows the list after `configure.py` is run again and the service restarted.
 
 **If 4G LTE is configured** (level 3):
 
