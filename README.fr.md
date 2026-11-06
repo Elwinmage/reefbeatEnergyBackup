@@ -1,5 +1,5 @@
 # reefbeat⚡Backup
-> Part of the [**ReefTech Project Ecosystem**](https://elwinmage.github.io/reeftank/)
+> Fait partie de l'[**écosystème ReefTech**](https://elwinmage.github.io/reeftank/)
 <p align="center">
   <img src="icon.png"  width="50%"/>
 </p>
@@ -15,6 +15,8 @@ Système autonome de monitoring et de gestion de batterie de secours pour aquari
 ## Projets liés
 
 Les projets ReefTech s'articulent entre eux : les intégrations font entrer votre matériel dans Home Assistant, la carte l'affiche et le pilote, et le secours le maintient en marche pendant une coupure. Chacun fonctionne aussi seul.
+
+<p align="center"><a href="https://elwinmage.github.io/reeftank/"><img src="https://raw.githubusercontent.com/Elwinmage/reeftank/main/assets/flower/ecosystem-flower.png" width="480" alt="ReefTech project ecosystem" /></a></p>
 
 <table>
   <tr>
@@ -44,13 +46,25 @@ Les projets ReefTech s'articulent entre eux : les intégrations font entrer votr
   <tr>
     <td><img src="https://raw.githubusercontent.com/Elwinmage/ha-reef-card/main/icon.png" width="64" alt="ha-reef-card" /></td>
     <td>🪸<br /><a href="https://github.com/Elwinmage/ha-reef-card"><b>ha-reef-card</b></a></td>
-    <td>Vue graphique interactive de chaque appareil sur votre tableau de bord, et seul moyen d'éditer les programmes avancés. Lit les trois intégrations ci-dessus via le contrat <code>reef_role</code> commun, sans configuration côté carte. Dessine aussi les flux d'énergie de reefbeatEnergyBackup.</td>
-    <td>les trois intégrations</td>
+    <td>Vue graphique interactive de chaque appareil sur votre tableau de bord, et seul moyen d'éditer les programmes avancés. Lit les trois intégrations ci-dessus via le contrat <code>reef_role</code> commun, sans configuration côté carte. Dessine aussi les flux d'énergie de reefbeatEnergyBackup. Sa carte aquarium donne vie à votre bac avec ha-reeftank-component.</td>
+    <td>les trois intégrations, et ha-reeftank-component pour l'aquarium</td>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/Elwinmage/ha-reeftank-component/main/icon.png" width="64" alt="ha-reeftank-component" /></td>
+    <td>🐟<br /><a href="https://github.com/Elwinmage/ha-reeftank-component"><b>ha-reeftank-component</b></a></td>
+    <td>Une image vivante de votre bac sur le tableau de bord : votre photo, éclairée par vos vraies lampes, avec des poissons et des coraux animés, et vos appareils et entités dessus. Stocke les aquariums et leur population, enregistre les nourrissages.</td>
+    <td>ha-reef-card</td>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/Elwinmage/reeftank-catalog/main/icon.png" width="64" alt="reeftank-catalog" /></td>
+    <td>🐡<br /><a href="https://github.com/Elwinmage/reeftank-catalog"><b>reeftank-catalog</b></a></td>
+    <td>Poissons, coraux et textures de la carte aquarium, téléchargés et tenus à jour par ha-reeftank-component.</td>
+    <td>ha-reeftank-component</td>
   </tr>
   <tr>
     <td><img src="https://raw.githubusercontent.com/Elwinmage/ha-reef-blueprints/main/icon.png" width="64" alt="ha-reef-blueprints" /></td>
     <td>🐬<br /><a href="https://github.com/Elwinmage/ha-reef-blueprints"><b>ha-reef-blueprints</b></a></td>
-    <td>Blueprints de notification communs à tout l'écosystème : entretiens en retard trouvés via le contrat <code>reef_role</code>, et appareils devenus injoignables. Huit langues.</td>
+    <td>Blueprints d'automatisation communs à tout l'écosystème : entretiens en retard trouvés via le contrat <code>reef_role</code>, appareils devenus injoignables, test périodique des chauffages et surveillance des relais. Huit langues.</td>
     <td>les trois intégrations</td>
   </tr>
   <tr>
@@ -72,9 +86,12 @@ L'ensemble est documenté sur la [page du projet ReefTech](https://elwinmage.git
 - **Dégradation progressive des pompes** — niveaux SoC calculés automatiquement à partir d'une cible d'autonomie
 - **Contrôle individuel** — chaque ReefWave / ReefRun / Skimmer reçoit sa propre intensité par niveau
 - **Failover réseau 3 niveaux** — Wi-Fi normal → reconnexion → hotspot autonome
+- **Notifications push** — via [ntfy.sh](https://ntfy.sh) (gratuit, sans compte) + secours 4G LTE
+- **Passerelle Internet 4G** — quand le hotspot est actif, le trafic ReefBeat passe par la 4G pour que l'app mobile Red Sea continue de fonctionner
 - **Intégration Home Assistant** — auto-discovery MQTT (10 capteurs + chargeur si Victron)
 - **Buffer MQTT avec replay** — les données pendant la coupure HA ne sont jamais perdues
 - **Auto-détection** — scanne le réseau pour trouver les équipements ReefBeat pendant la configuration
+- **Surveillance du mode Poseidon** — surveille le relais MQTT de [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) et remet les appareils en mode normal quand il tombe
 - **Mise à jour automatique** — vérifie GitHub pour les nouvelles versions, entité `update` dans HA avec bouton "Installer"
 - **Redémarrage programmé** — reboot automatique du RPi via cron, annulé si sur batterie
 - **Bilingue** — interface FR/EN selon la locale système
@@ -90,6 +107,8 @@ L'ensemble est documenté sur la [page du projet ReefTech](https://elwinmage.git
 - [Configuration](#-configuration)
 - [Home Assistant](#-home-assistant)
 - [Blueprint test de batterie](#-blueprint-test-automatique-de-batterie)
+- [Notifications push](#-notifications-push-ntfysh)
+- [Surveillance du mode Poseidon](#-surveillance-du-mode-poseidon)
 - [Structure du projet](#-structure-du-projet)
 - [Dépannage](#-dépannage)
 
@@ -112,6 +131,35 @@ L'installeur :
    - Détecte automatiquement votre Raspberry Pi
    - Calcule les niveaux SoC à partir d'une **cible d'autonomie** (12 h, 24 h…)
    - Configure batterie, monitoring INA226 + Victron optionnel, MQTT
+
+---
+
+## 🔄 Gestion du service
+
+L'installeur crée un service systemd nommé `reefbeat-energy-backup` :
+
+```bash
+# État
+sudo systemctl status reefbeat-energy-backup
+
+# Démarrer / arrêter / redémarrer
+sudo systemctl start reefbeat-energy-backup
+sudo systemctl stop reefbeat-energy-backup
+sudo systemctl restart reefbeat-energy-backup
+
+# Journal en direct
+sudo journalctl -u reefbeat-energy-backup -f
+
+# Désactiver le démarrage automatique
+sudo systemctl disable reefbeat-energy-backup
+```
+
+Pour reconfigurer à tout moment :
+
+```bash
+python3 ~/scripts/reefbeatEnergyBackup/configure.py
+sudo systemctl restart reefbeat-energy-backup
+```
 
 ---
 
@@ -569,7 +617,7 @@ Pour un setup typique (2× ReefWave 45 + 1× ReefRun 12000 + DC Skimmer + Pi) :
 
 ## ⚙️ Configuration
 
-Le wizard `configure.py` est interactif et bilingue (FR/EN selon la locale). Il guide à travers 6 étapes :
+Le wizard `configure.py` est interactif et bilingue (FR/EN selon la locale). Il guide à travers plusieurs étapes :
 
 1. **Réseau** — confirmation du SSID Wi-Fi domestique (lu depuis NetworkManager)
 2. **Détection des équipements ReefBeat** — scan automatique du sous-réseau, sélection des équipements à mettre sur batterie
@@ -579,8 +627,77 @@ Le wizard `configure.py` est interactif et bilingue (FR/EN selon la locale). Il 
 6. **Mode de secours** — choix entre :
    - **Auto** (recommandé) : on donne une cible d'autonomie, le wizard détecte le Pi, demande les charges auxiliaires, et calcule les niveaux SoC + intensités optimales
    - **Simple** : une seule vitesse de secours sur tout
+7. **MQTT** — paramètres de connexion à Home Assistant
+8. **Notifications push** — topic ntfy.sh + secours 4G LTE (E3372h ou tethering) + passerelle NAT
+   Puis la **surveillance du mode Poseidon**, optionnelle
+9. **Redémarrage programmé** — reboot automatique du RPi via cron (annulé si sur batterie)
+10. **Intervalle de polling**
 
 Le résultat est sauvegardé dans `config.json` et peut être édité à la main si besoin.
+
+---
+
+## 🏠 Home Assistant
+
+### Capteurs auto-publiés
+
+Tous les capteurs apparaissent automatiquement dans HA après publication des configs MQTT discovery.
+
+| Capteur | Description |
+|---|---|
+| `sensor.reef_battery_voltage` | Tension batterie (V) |
+| `sensor.reef_battery_current` | Courant (A, + = décharge) |
+| `sensor.reef_battery_power` | Puissance (W) |
+| `sensor.reef_battery_soc` | State of Charge (%) |
+| `sensor.reef_battery_power_state` | mains / battery |
+| `sensor.reef_battery_pump_intensity` | Intensité pompes moyenne (%) |
+| `sensor.reef_battery_runtime` | Autonomie estimée (h) — indique toujours « si le courant coupe maintenant » |
+| `sensor.reef_battery_outage_duration` | Durée coupure courante (min) |
+| `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
+| `sensor.reef_battery_monitor_source` | ina226 |
+
+**Si Victron BLE est configuré** (niveau 3) :
+
+| Capteur | Description |
+|---|---|
+| `sensor.reef_battery_charger_voltage` | Tension de sortie chargeur (V) |
+| `sensor.reef_battery_charger_current` | Courant de sortie chargeur (A) |
+| `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
+| `sensor.reef_battery_charger_error` | no_error / … |
+| `sensor.reef_battery_charger_power` | Puissance de sortie du chargeur (W) |
+
+**Marqueurs stables.** Chaque capteur de mesure ci-dessus porte un attribut `reef_role` (`battery_power`, `battery_soc`, `power_state`, `runtime`, `charger_power`…) : [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) et le blueprint de test batterie retrouvent les entités grâce à lui, renommer une entité dans Home Assistant ne casse donc rien. Le capteur d'intensité des pompes porte aussi un attribut `controllers` listant les pompes pilotées par ce service (nom de l'appareil, identifiant matériel, et voie pour une pompe ReefRun) : la carte affiche ces pompes dans sa vue des flux d'énergie, et suit la liste après une nouvelle exécution de `configure.py` et un redémarrage du service.
+
+**Si la 4G LTE est configurée** (niveau 3) :
+
+| Capteur | Description |
+|---|---|
+| `sensor.reef_battery_lte_signal` | Force du signal (dBm) |
+| `sensor.reef_battery_lte_signal_quality` | Qualité du signal (échelle RSSI 0-31) |
+| `sensor.reef_battery_lte_operator` | Nom de l'opérateur (ex. Orange F) |
+| `sensor.reef_battery_lte_network_type` | Type de réseau (LTE/HSPA+/EDGE/GSM) |
+| `sensor.reef_battery_lte_sim_status` | État de la SIM (ready/pin_required/absent) |
+| `sensor.reef_battery_lte_connected` | Internet joignable via la 4G (ON/OFF) |
+| `sensor.reef_battery_lte_ip` | Adresse IP de l'interface LTE |
+| `sensor.reef_battery_lte_model` | Modèle du modem |
+| `sensor.reef_battery_lte_manufacturer` | Fabricant du modem |
+| `sensor.reef_battery_lte_firmware` | Version du firmware du modem |
+| `sensor.reef_battery_lte_imei` | IMEI du modem |
+
+Les capteurs LTE sont mis à jour toutes les 10 minutes (réglable via `lte_monitor.check_interval_min` dans `config.json`).
+
+### Buffer MQTT
+
+Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
+
+Configuration optionnelle dans `config.json` :
+
+```json
+"mqtt": {
+  "buffer_dir": "/var/lib/reefbeat-energy-backup/mqtt",
+  "buffer_retention_days": 7
+}
+```
 
 ---
 
@@ -654,49 +771,84 @@ Retour du courant (relais GPIO, instantané)
 
 ---
 
-## 🏠 Home Assistant
+## 📱 Notifications push (ntfy.sh)
 
-### Capteurs auto-publiés
+Recevez les alertes directement sur votre téléphone, sans Home Assistant, avec le service gratuit [ntfy.sh](https://ntfy.sh).
 
-Tous les capteurs apparaissent automatiquement dans HA après publication des configs MQTT discovery.
+**Mise en place :**
+1. Installez l'app ntfy ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/app/ntfy/id1625396347))
+2. Abonnez-vous à votre topic (configuré dans le wizard)
+3. C'est tout : les notifications partent automatiquement à chaque coupure de courant
 
-| Capteur | Description |
+**Événements notifiés** (uniquement pendant les coupures) :
+- ⚡ Coupure de courant détectée (avec SoC et autonomie estimée)
+- ✅ Courant rétabli (avec durée de la coupure)
+- 🟡🟠🔴 Changements de niveau des pompes (eco → survival → critique)
+- 🚨 Batterie très faible (alertes répétées toutes les 60 s)
+- 📡 État du failover réseau
+
+**Priorités :** coupure = `high` (son), critique = `urgent` (alarme persistante), info = `default` (silencieux)
+
+**Test en ligne de commande :**
+
+```bash
+python3 test_notif.py                     # Test simple
+python3 test_notif.py --type outage       # Simuler une coupure
+python3 test_notif.py --type critical     # Simuler une batterie critique (alarme)
+python3 test_notif.py --type restored     # Simuler le retour du courant
+python3 test_notif.py --lte              # Forcer l'envoi par le modem 4G
+python3 test_notif.py --message "Hello"   # Message personnalisé
+```
+
+---
+
+## 🔱 Surveillance du mode Poseidon
+
+Le [mode Poseidon](https://github.com/Elwinmage/ha-reefbeat-component/blob/main/doc/fr/poseidon.fr.md#mode-poseidon) fait pointer vos appareils ReefBeat vers un relais MQTT dans Home Assistant. Si ce relais tombe, les appareils perdent le cloud Red Sea. Ce service surveille le relais depuis l'extérieur et remet les appareils sur le broker Red Sea.
+
+| Situation | Ce qu'il fait |
 |---|---|
-| `sensor.reef_battery_voltage` | Tension batterie (V) |
-| `sensor.reef_battery_current` | Courant (A, + = décharge) |
-| `sensor.reef_battery_power` | Puissance (W) |
-| `sensor.reef_battery_soc` | State of Charge (%) |
-| `sensor.reef_battery_power_state` | mains / battery |
-| `sensor.reef_battery_pump_intensity` | Intensité pompes moyenne (%) |
-| `sensor.reef_battery_runtime` | Autonomie estimée (h) |
-| `sensor.reef_battery_outage_duration` | Durée coupure courante (min) |
-| `sensor.reef_battery_network_mode` | client / rejoin / hotspot |
-| `sensor.reef_battery_monitor_source` | ina226 |
+| Le relais répond et au moins un appareil échange avec Red Sea | Rien : il garde à jour la liste des appareils et leurs clefs |
+| Rien en mode Poseidon | Rien |
+| Pas de réponse, ou aucun trafic | Notifie, puis revérifie après `retry_delay_min` |
+| Toujours en échec, broker Red Sea joignable | **Tous** les appareils repassent en mode normal, puis une notification les nomme |
+| Toujours en échec, broker Red Sea injoignable | Rien, les appareils sont laissés tels quels : Internet est coupé |
+| Hotspot sur le point de démarrer | Tous les appareils repassent d'abord en mode normal, sans aucun contrôle : sur le hotspot, ils ne peuvent pas joindre le relais. Les contrôles se mettent ensuite en pause jusqu'à l'arrêt du hotspot |
 
-**Si Victron BLE est configuré** (niveau 3) :
+Un appareil en maintenance ne fait jamais basculer les autres : un seul appareil qui parle suffit. Dans le pire des cas, les appareils sont revenus environ 20 minutes après une panne, ce qui laisse le temps à Home Assistant de redémarrer. Le watchdog ne passe jamais en mode Poseidon : c'est vous qui le faites depuis Home Assistant, une fois la panne réparée.
 
-| Capteur | Description |
-|---|---|
-| `sensor.reef_battery_charger_voltage` | Tension de sortie chargeur (V) |
-| `sensor.reef_battery_charger_current` | Courant de sortie chargeur (A) |
-| `sensor.reef_battery_charger_state` | bulk / absorption / float / storage |
-| `sensor.reef_battery_charger_error` | no_error / … |
-| `sensor.reef_battery_charger_power` | Puissance de sortie du chargeur (W) |
+### Mise en place
 
-**Marqueurs stables.** Chaque capteur de mesure ci-dessus porte un attribut `reef_role` (`battery_power`, `battery_soc`, `power_state`, `runtime`, `charger_power`…) : [ha-reef-card](https://github.com/Elwinmage/ha-reef-card) et le blueprint de test batterie retrouvent les entités grâce à lui, renommer une entité dans Home Assistant ne casse donc rien. Le capteur d'intensité des pompes porte aussi un attribut `controllers` listant les pompes pilotées par ce service (nom de l'appareil, identifiant matériel, et voie pour une pompe ReefRun) : la carte affiche ces pompes dans sa vue des flux d'énergie, et suit la liste après une nouvelle exécution de `configure.py` et un redémarrage du service.
-
-### Buffer MQTT
-
-Pendant une coupure, HA et le broker MQTT sont presque toujours indisponibles (ils sont sur la même infra que le secteur). Le service écrit toutes les mesures dans `/var/lib/reefbeat-energy-backup/mqtt/messages.jsonl` et les rejoue automatiquement dès que le broker remonte → vous obtenez la courbe complète a posteriori, sans trou.
-
-Configuration optionnelle dans `config.json` :
+`python3 configure.py` le propose, ou éditez `config.json` :
 
 ```json
-"mqtt": {
-  "buffer_dir": "/var/lib/reefbeat-energy-backup/mqtt",
-  "buffer_retention_days": 7
+"poseidon_watchdog": {
+    "enabled": true,
+    "host": "homeassistant.local",
+    "port": 1884,
+    "key": "les 16 caractères de Poseidon",
+    "check_interval_min": 5,
+    "minutes": 10,
+    "retry_delay_min": 10,
+    "cache_file": "/var/lib/reefbeat-energy-backup/poseidon_watchdog.json"
 }
 ```
+
+`port` et `key` se trouvent dans *Poseidon > Configurer > Réglages de Poseidon* dans Home Assistant. Testez-les avec :
+
+```bash
+python3 poseidon_watchdog.py --config config.json status
+```
+
+Puis redémarrez le service. Le cache contient les clefs de vos appareils : il n'est lisible que par son propriétaire. `config.json` contient la clef du watchdog : gardez-le privé.
+
+> [!NOTE]
+> Une installation mise à jour depuis une version plus ancienne a besoin du paquet `cryptography` : `pip3 install --break-system-packages cryptography`. Sans lui, le watchdog reste désactivé et le journal l'indique.
+
+> [!NOTE]
+> Seuls les appareils de la sauvegarde peuvent rejoindre le hotspot (liste blanche MAC). Un appareil en mode Poseidon injoignable avant son démarrage, et absent de votre liste de sauvegarde, reste sur le relais jusqu'au retour du réseau domestique ; la notification le nomme.
+
+Pour surveiller le relais sans le matériel de secours, lancez le module seul sur n'importe quelle machine avec Python et `cryptography` : `python3 poseidon_watchdog.py --config config.json run`.
 
 ---
 
@@ -798,6 +950,15 @@ monitor.py                          Backend INA226 + auxiliaire Victron BLE
 outage.py                           Détection de coupure (relais GPIO)
 hotspot.py                          Failover réseau 3 niveaux
 controller.py                       Contrôle pompes + orchestration coupure
+notifier.py                         Notifications push (ntfy.sh + 4G LTE)
+lte_monitor.py                      Télémétrie du modem LTE (capteurs MQTT)
+poseidon_watchdog.py                Surveillance du relais Poseidon (module autonome)
+test_notif.py                       Testeur CLI des notifications
+test_reefbeat.py                    Testeur CLI des équipements ReefBeat
+test_sim7600.py                     Testeur CLI du module 4G SIM7600G-H
+updater.py                          Module de mise à jour (GitHub + entité update HA)
+update.py                           Outil CLI de mise à jour
+VERSION                             Numéro de version courant
 mqtt_buffer.py                      Buffer MQTT avec replay
 power_estimation.py                 Tables de conso + builder de scénario
 ble_scan.py                         Scanner BLE Victron (utilisé par le wizard)
@@ -808,6 +969,23 @@ docs/
 blueprints/
   reef_battery_test.yaml            Blueprint HA de test de batterie
 ```
+
+---
+
+## 🔧 Outils en ligne de commande
+
+| Commande | Description |
+|---------|-------------|
+| `python3 configure.py` | Reconfigurer (relancer le wizard) |
+| `python3 test_reefbeat.py` | Tester la communication avec les équipements ReefBeat |
+| `python3 test_reefbeat.py --read` | Lire l'état de tous les équipements |
+| `python3 test_reefbeat.py --test-all` | Cycle de test complet (lecture → changement → vérification → restauration) |
+| `python3 test_sim7600.py` | Tester le module 4G SIM7600G-H (série, SIM, signal, connectivité) |
+| `python3 test_notif.py` | Tester les notifications push |
+| `python3 update.py` | Vérifier les mises à jour |
+| `python3 update.py --install` | Installer la mise à jour disponible |
+| `python3 ble_scan.py` | Scanner les appareils Victron BLE |
+| `python3 setup.py --check` | Vérifier les dépendances et le matériel |
 
 ---
 
@@ -829,13 +1007,44 @@ sudo rm /etc/cron.d/reefbeat-reboot
 
 ---
 
+## 🔄 Mises à jour
+
+### Depuis Home Assistant
+
+Une entité `update` apparaît automatiquement dans HA (`update.reef_battery_update`). Elle affiche la version actuelle et la dernière version, avec un bouton **Installer** quand une mise à jour est disponible, comme n'importe quel module complémentaire HA.
+
+Le service vérifie GitHub toutes les 6 heures (réglable). Après un clic sur « Installer », la mise à jour est téléchargée, `config.json` est sauvegardé et le service redémarre automatiquement.
+
+### En ligne de commande
+
+```bash
+cd ~/scripts/reefbeatEnergyBackup
+
+# Vérifier les mises à jour
+python3 update.py
+
+# Installer la mise à jour
+python3 update.py --install
+
+# Forcer la réinstallation
+python3 update.py --force
+
+# Afficher la version actuelle
+python3 update.py --version
+```
+
+---
+
 ## 🔌 Power Flow Card Plus (tableau de bord optionnel)
+
+> [!TIP]
+> [ha-reef-card](https://github.com/Elwinmage/ha-reef-card/blob/main/doc/fr/energybackup.fr.md) dessine cette vue toute seule : ni YAML ni capteur template. La configuration manuelle ci-dessous ne sert que pour un tableau de bord personnel.
 
 <p align="center">
   <img src="docs/images/power-flow-card.png" alt="Powerflow Card center">
 </p>
 
-Vous pouvez visualiser les flux d'énergie du système batterie dans un tableau de bord Home Assistant avec [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
+Vous pouvez visualiser les flux d'énergie du système batterie dans un tableau de bord Home Assistant avec [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (*Paramètres > Marketplace*).
 
 La carte affiche les flux de puissance en temps réel entre le secteur, la batterie et les pompes individuelles (gyres ReefWave, pompe de remontée ReefRun, écumeur DC) avec des icônes dynamiques qui changent selon l'état des pompes.
 
@@ -881,7 +1090,7 @@ template:
 
 #### Icônes dynamiques via `config-template-card`
 
-`power-flow-card-plus` ne supporte qu'une icône statique par nœud `individual` ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). Pour faire varier l'icône selon l'état des pompes (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), on enveloppe la carte dans [`config-template-card`](https://github.com/iantrich/config-template-card) (HACS → Frontend) : ce wrapper réévalue les variables `${...}` à chaque changement d'état des entités listées, et passe la config finalisée à la carte enfant.
+`power-flow-card-plus` ne supporte qu'une icône statique par nœud `individual` ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). Pour faire varier l'icône selon l'état des pompes (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), on enveloppe la carte dans [`config-template-card`](https://github.com/iantrich/config-template-card) (*Paramètres > Marketplace*) : ce wrapper réévalue les variables `${...}` à chaque changement d'état des entités listées, et passe la config finalisée à la carte enfant.
 
 Exemple complet fonctionnel (adaptez les entity IDs à vos appareils) :
 
@@ -1030,12 +1239,13 @@ Cependant, le **cloud Red Sea et l'app mobile ne sont pas informés** de ce chan
 
 ## 🐛 Dépannage
 
-Voir [TROUBLESHOOTING.md](TROUBLESHOOTING.md) pour les problèmes courants :
+Problèmes courants :
 
 - `Failed to add edge detection` → installer `python3-rpi-lgpio`
 - INA226 lit `0.000A` → vérifier le câblage en série du shunt
 - Victron `'Scanner' has no attribute 'scan'` → version `victron-ble` incompatible
 - MQTT discovery sensors absents → vérifier les credentials et le `base_topic`
+- `runtime_h` affiche `-1.0` → passer à la dernière version (corrigé)
 
 ---
 

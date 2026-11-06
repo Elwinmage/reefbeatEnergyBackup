@@ -120,6 +120,17 @@
         "check_interval_min": 10
     },
 
+    "poseidon_watchdog": {
+        "enabled": false,
+        "host": "homeassistant.local",
+        "port": 1884,
+        "key": "",
+        "check_interval_min": 5,
+        "minutes": 10,
+        "retry_delay_min": 10,
+        "cache_file": "/var/lib/reefbeat-energy-backup/poseidon_watchdog.json"
+    },
+
     "notifications": {
         "enabled": false,
         "provider": "ntfy",

@@ -472,6 +472,23 @@ class Notifier:
         )
 
 
+    def notify_poseidon(self, title: str, message: str,
+                        critical: bool = False):
+        """Poseidon relay watchdog: relay lost, devices switched back."""
+        if not self._enabled:
+            return
+        if not self._can_send(f"poseidon_{title}"):
+            return
+
+        self._send_ntfy(
+            title=title,
+            message=message,
+            priority=self._priority_map.get(
+                "outage" if critical else "info", "default"),
+            tags="trident",
+        )
+
+
 # =============================================================================
 # Factory
 # =============================================================================

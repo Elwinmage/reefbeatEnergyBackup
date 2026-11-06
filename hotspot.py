@@ -19,7 +19,7 @@ import re
 import threading
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Callable, Optional, List, Dict
 
 
 class NetworkMode(Enum):
@@ -62,6 +62,10 @@ class NetworkManager:
         self._nat_active = False
         self._lock = threading.Lock()
         self._wifi_cut_thread: Optional[threading.Thread] = None
+        # Set by main.py when the Poseidon watchdog runs: called right before
+        # the hotspot goes up, and with the addresses of its clients
+        self.before_hotspot: Optional[Callable[[], None]] = None
+        self.on_hotspot_clients: Optional[Callable[[List[str]], None]] = None
 
     def cut_wifi_for(self, minutes: float) -> None:
         """
@@ -713,6 +717,13 @@ class NetworkManager:
         if stop_event.is_set():
             return False
 
+        # Devices on the hotspot subnet cannot reach the Poseidon relay
+        if self.before_hotspot:
+            try:
+                self.before_hotspot()
+            except Exception as e:
+                print(f"[FAILOVER] Poseidon switch failed: {e}")
+
         if not self.activate_hotspot():
             print("[FAILOVER] Level 3 — Hotspot activation failed")
             return False
@@ -860,6 +871,13 @@ class NetworkManager:
         The original IP is saved in "ip_original" so restore_controller_ips
         can put it back when we leave hotspot mode.
         """
+        if self.on_hotspot_clients:
+            try:
+                self.on_hotspot_clients(
+                    list(self._read_dhcp_leases_by_mac().values()))
+            except Exception as e:
+                print(f"[FAILOVER] Poseidon switch failed: {e}")
+
         hotspot_prefix = ".".join(
             self._hotspot_cfg.get("ip", "192.168.4.1").split(".")[:3])
 

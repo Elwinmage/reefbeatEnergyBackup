@@ -164,6 +164,7 @@ PIP_PACKAGES_CORE = [
     "smbus2",
     "paho-mqtt",
     "requests",
+    "cryptography",
 ]
 
 PIP_PACKAGES_GPIO = [
