@@ -37,7 +37,7 @@ import paho.mqtt.client as mqtt
 
 from monitor import create_monitor_backend
 from outage import create_outage_detector, PowerState
-from hotspot import NetworkManager
+from hotspot import NetworkManager, NetworkMode
 from controller import PumpController, OutageManager
 from mqtt_buffer import MqttBuffer
 from notifier import create_notifier
@@ -47,6 +47,7 @@ from energy import EnergyAccumulator, publish_energy_discovery, publish_energy_s
 from maintenance import BatteryTestMaintenance
 from device_info import build_device_info
 from test_controls import TestControls
+from poseidon_watchdog import create_poseidon_watchdog
 
 
 # =============================================================================
@@ -413,6 +414,17 @@ def main():
             pump, network,
         )
         test_controls.start()
+
+    # --- Poseidon relay watchdog (off unless configured) ---
+    poseidon_watchdog = create_poseidon_watchdog(
+        cfg,
+        notify=notifier.notify_poseidon,
+        paused=lambda: network.mode == NetworkMode.HOTSPOT,
+    )
+    if poseidon_watchdog:
+        network.before_hotspot = poseidon_watchdog.before_hotspot
+        network.on_hotspot_clients = poseidon_watchdog.hotspot_clients
+        poseidon_watchdog.start()
 
     # --- Outage detector ---
     detector = create_outage_detector(cfg)

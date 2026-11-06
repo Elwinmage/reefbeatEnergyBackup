@@ -1263,6 +1263,7 @@ def run_wizard(install_dir: str):
     # =================================================================
     _step7_mqtt(cfg, defaults)
     _step8_notifications(cfg, defaults)
+    _step_poseidon_watchdog(cfg, defaults)
     _step9_scheduled_reboot(cfg, defaults)
     _step10_polling_and_save(cfg, defaults, install_dir)
 
@@ -2640,6 +2641,40 @@ def _step8_notifications(cfg: dict, defaults: dict):
     }
 
     ok(t("Notifications configurées", "Notifications configured"))
+
+
+def _step_poseidon_watchdog(cfg: dict, defaults: dict):
+    """Optional step: watch the Poseidon relay of Home Assistant."""
+    section(t("Surveillance du mode Poseidon", "Poseidon mode watchdog"))
+    current = defaults.get("poseidon_watchdog", {})
+    watchdog = dict(current)
+    info(t("Si le relais Poseidon de Home Assistant tombe, les appareils "
+           "repassent en mode normal.",
+           "If the Poseidon relay of Home Assistant dies, the devices go back "
+           "to normal mode."))
+    watchdog["enabled"] = ask_yes_no(
+        t("Activer la surveillance ?", "Enable the watchdog?"),
+        default=bool(current.get("enabled", False)))
+    if watchdog["enabled"]:
+        watchdog["host"] = ask(
+            t("Adresse de Home Assistant", "Home Assistant address"),
+            default=current.get("host"))
+        watchdog["port"] = ask_int(
+            t("Port du relais (réglages Poseidon)",
+              "Relay port (Poseidon settings)"),
+            default=int(current.get("port", 1884)),
+            min_val=1, max_val=65535)
+        while True:
+            key = ask(
+                t("Clef du watchdog (16 caractères, réglages Poseidon)",
+                  "Watchdog key (16 characters, Poseidon settings)"),
+                default=current.get("key") or None)
+            if len(str(key).encode("utf-8")) == 16:
+                watchdog["key"] = key
+                break
+            warn(t("La clef doit faire exactement 16 caractères",
+                   "The key must be exactly 16 characters"))
+    cfg["poseidon_watchdog"] = watchdog
 
 
 def _step9_scheduled_reboot(cfg: dict, defaults: dict):

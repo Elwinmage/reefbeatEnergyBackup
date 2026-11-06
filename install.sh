@@ -186,8 +186,8 @@ done
 echo ""
 echo -e "${BLUE}${MSG_PIP}${NC}"
 pip3 install --break-system-packages \
-    smbus2 paho-mqtt requests RPi.GPIO netifaces 2>/dev/null \
-    || pip3 install smbus2 paho-mqtt requests RPi.GPIO netifaces 2>/dev/null \
+    smbus2 paho-mqtt requests cryptography RPi.GPIO netifaces 2>/dev/null \
+    || pip3 install smbus2 paho-mqtt requests cryptography RPi.GPIO netifaces 2>/dev/null \
     || true
 
 # Optional: BLE dependencies

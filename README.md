@@ -65,7 +65,7 @@ The ReefTech projects fit together: the integrations bring your equipment into H
   <tr>
     <td><img src="https://raw.githubusercontent.com/Elwinmage/ha-reef-blueprints/main/icon.png" width="64" alt="ha-reef-blueprints" /></td>
     <td>🐬<br /><a href="https://github.com/Elwinmage/ha-reef-blueprints"><b>ha-reef-blueprints</b></a></td>
-    <td>Notification blueprints shared by the whole ecosystem: overdue maintenance found through the <code>reef_role</code> contract, and devices that went unreachable. Eight languages.</td>
+    <td>Automation blueprints shared by the whole ecosystem: overdue maintenance found through the <code>reef_role</code> contract, devices that went unreachable, a periodic heater test and a relay watch. Eight languages.</td>
     <td>all three integrations</td>
   </tr>
   <tr>
@@ -92,6 +92,7 @@ All of them are documented together on the [ReefTech project page](https://elwin
 - **Home Assistant integration** — MQTT auto-discovery (10 sensors + charger if Victron)
 - **MQTT buffer with replay** — data during HA outage is never lost
 - **Auto-detection** — scans your network for ReefBeat devices during setup
+- **Poseidon mode watchdog** — watches the MQTT relay of [ha-reefbeat-component](https://github.com/Elwinmage/ha-reefbeat-component) and switches the devices back to normal mode when it dies
 - **Self-update** — checks GitHub for new versions, HA update entity with "Install" button
 - **Scheduled reboot** — automatic RPi reboot via cron, skipped if on battery
 - **Bilingual** — FR/EN interface based on system locale
@@ -108,6 +109,7 @@ All of them are documented together on the [ReefTech project page](https://elwin
 - [Home Assistant](#-home-assistant)
 - [Battery test blueprint](#-automatic-battery-test-blueprint)
 - [Push notifications](#-push-notifications-ntfysh)
+- [Poseidon mode watchdog](#-poseidon-mode-watchdog)
 - [Project structure](#-project-structure)
 - [Troubleshooting](#-troubleshooting)
 
@@ -629,6 +631,7 @@ The `configure.py` wizard is interactive and bilingual (FR/EN based on locale). 
    - **Simple**: a single backup speed for everything
 7. **MQTT** — Home Assistant connection settings
 8. **Push notifications** — ntfy.sh topic + 4G LTE failover (E3372h or tethering) + NAT gateway
+   Then the optional **Poseidon mode watchdog**
 9. **Scheduled reboot** — automatic RPi reboot via cron (skipped if on battery)
 10. **Polling interval**
 
@@ -801,6 +804,56 @@ python3 test_notif.py --message "Hello"   # Custom message
 
 ---
 
+## 🔱 Poseidon mode watchdog
+
+[Poseidon mode](https://github.com/Elwinmage/ha-reefbeat-component/blob/main/doc/en/poseidon.md#poseidon-mode) points your ReefBeat devices at an MQTT relay inside Home Assistant. If that relay dies, the devices lose the Red Sea cloud. This service watches the relay from outside and switches the devices back to the Red Sea broker.
+
+| Situation | What it does |
+|---|---|
+| The relay answers and at least one device exchanges with Red Sea | Nothing: keeps the list of the devices and their keys up to date |
+| Nothing in Poseidon mode | Nothing |
+| No answer, or no traffic at all | Notifies, then checks again after `retry_delay_min` |
+| Still failing, Red Sea broker reachable | **Every** device back to normal mode, then a notification naming them |
+| Still failing, Red Sea broker out of reach | Nothing, the devices are left alone: Internet is down |
+| Hotspot about to start | Every device back to normal mode first, without any check: on the hotspot they cannot reach the relay. The checks then pause until the hotspot stops |
+
+A device under maintenance never switches the others: one device talking is enough. Worst case, the devices are back about 20 minutes after a failure, which leaves room for a Home Assistant restart. The watchdog never enters Poseidon mode: you do that again from Home Assistant, once it is repaired.
+
+### Setting it up
+
+`python3 configure.py` asks for it, or edit `config.json`:
+
+```json
+"poseidon_watchdog": {
+    "enabled": true,
+    "host": "homeassistant.local",
+    "port": 1884,
+    "key": "the 16 characters of Poseidon",
+    "check_interval_min": 5,
+    "minutes": 10,
+    "retry_delay_min": 10,
+    "cache_file": "/var/lib/reefbeat-energy-backup/poseidon_watchdog.json"
+}
+```
+
+`port` and `key` come from *Poseidon > Configure > Poseidon settings* in Home Assistant. Test them with:
+
+```bash
+python3 poseidon_watchdog.py --config config.json status
+```
+
+Then restart the service. The cache holds the keys of your devices, so it is written readable by its owner only. `config.json` holds the watchdog key: keep it private.
+
+> [!NOTE]
+> An installation updated from an older version needs the `cryptography` package: `pip3 install --break-system-packages cryptography`. Without it, the watchdog stays off and the log says so.
+
+> [!NOTE]
+> Only the devices of the backup can join the hotspot (MAC whitelist). A device in Poseidon mode that is out of reach before it starts, and is not in your backup list, stays on the relay until the home network is back; the notification names it.
+
+To watch the relay without the energy backup hardware, run the module alone on any machine with Python and `cryptography`: `python3 poseidon_watchdog.py --config config.json run`.
+
+---
+
 ## 🤖 Automatic battery test blueprint
 
 > **Available only with level 3** (Tongou circuit breaker required).
@@ -888,6 +941,7 @@ hotspot.py                          3-level network failover
 controller.py                       Pump control + outage orchestration
 notifier.py                         Push notifications (ntfy.sh + 4G LTE)
 lte_monitor.py                      LTE modem telemetry (MQTT sensors)
+poseidon_watchdog.py                Poseidon relay watchdog (standalone module)
 test_notif.py                       CLI notification tester
 test_reefbeat.py                    CLI ReefBeat equipment tester
 test_sim7600.py                     CLI SIM7600G-H 4G module tester
@@ -971,11 +1025,14 @@ python3 update.py --version
 
 ## 🔌 Power Flow Card Plus (optional dashboard)
 
+> [!TIP]
+> [ha-reef-card](https://github.com/Elwinmage/ha-reef-card/blob/main/doc/en/energybackup.md#energy-backup) draws this view by itself: no YAML, no template sensor. The manual setup below is only useful for a dashboard of your own.
+
 <p align="center">
   <img src="docs/images/power-flow-card.png" alt="Powerflow Card center">
 </p>
 
-You can visualize the battery system's power flows in a Home Assistant dashboard using [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (HACS → Frontend).
+You can visualize the battery system's power flows in a Home Assistant dashboard using [Power Flow Card Plus](https://github.com/flixlix/power-flow-card-plus) (*Settings > Marketplace*).
 
 The card shows real-time power flows between the grid (mains), the battery, and the individual pumps (ReefWave gyres, ReefRun return pump, DC Skimmer) with dynamic icons that change based on pump state.
 
@@ -1021,7 +1078,7 @@ template:
 
 #### Dynamic icons via `config-template-card`
 
-`power-flow-card-plus` only supports a static icon per `individual` node ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). To switch icons based on pump state (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), wrap the card with [`config-template-card`](https://github.com/iantrich/config-template-card) (HACS → Frontend): the wrapper re-evaluates `${...}` variables whenever a listed entity changes state and passes the finalised config to the child card.
+`power-flow-card-plus` only supports a static icon per `individual` node ([discussion #355](https://github.com/flixlix/power-flow-card-plus/discussions/355)). To switch icons based on pump state (`redsea:gyre-off/min/med/max`, `redsea:pump-on/off`, `redsea:skimmer-on/off`), wrap the card with [`config-template-card`](https://github.com/iantrich/config-template-card) (*Settings > Marketplace*): the wrapper re-evaluates `${...}` variables whenever a listed entity changes state and passes the finalised config to the child card.
 
 Full working example (adapt entity IDs to your devices):
 
@@ -1170,7 +1227,7 @@ However, the **Red Sea cloud and mobile app are unaware of this change**. The cl
 
 ## 🐛 Troubleshooting
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues:
+Common issues:
 
 - `Failed to add edge detection` → install `python3-rpi-lgpio`
 - INA226 reads `0.000A` → verify shunt is wired in series
