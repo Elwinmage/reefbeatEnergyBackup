@@ -1188,12 +1188,15 @@ card:
     mode: show
     transparency: 50
   use_new_flow_rate_model: true
+  # Every load runs through the battery (Power Flow Card Plus >= 0.5.0)
+  topology: battery_hub
 ```
 
 Notes on the values:
 
 - **Battery**: `sensor.reef_battery_backup_puissance` is positive while the battery discharges, which is what Power Flow Card Plus expects from a single battery entity. Do **not** set `invert_state: true`: charge and discharge would be swapped and the aquarium node would stay at 0 W during an outage.
 - **Mains**: the `grid` entity must be a power in W. `sensor.reef_battery_backup_puissance_chargeur` only exists with a Victron charger (level 3); without it, leave the `grid` block out. The charger feeds both the battery and the pumps, so the card shows `charger power − battery charge` on the aquarium node.
+- **Topology** (Power Flow Card Plus 0.5.0 and later): `topology: battery_hub` matches the wiring of this backup, where the battery sits on the bus between the charger and the pumps (a DC UPS: every load runs through the battery). The card then draws mains → battery → aquarium, and never a mains → aquarium wire skipping the battery. Older versions ignore the option and draw the `standard` layout. Do not use `isolated_battery`: it removes the mains ↔ battery wire, the one the charger uses.
 - **Aquarium**: the value of the `home` node is computed by the card. Its `entity` (the consumed energy counter) is only what a click on the node opens.
 - **ReefRun pumps**: the speed `number` entities are used directly, no template sensor is needed for them.
 

@@ -1200,12 +1200,15 @@ card:
     mode: show
     transparency: 50
   use_new_flow_rate_model: true
+  # Every load runs through the battery (Power Flow Card Plus >= 0.5.0)
+  topology: battery_hub
 ```
 
 Remarques sur les valeurs :
 
 - **Batterie** : `sensor.reef_battery_backup_puissance` est positive quand la batterie se décharge, ce qu'attend Power Flow Card Plus d'une entité batterie unique. Ne mettez **pas** `invert_state: true` : charge et décharge seraient inversées et le nœud aquarium resterait à 0 W pendant une coupure.
 - **Secteur** : l'entité `grid` doit être une puissance en W. `sensor.reef_battery_backup_puissance_chargeur` n'existe qu'avec un chargeur Victron (niveau 3) ; sans lui, retirez le bloc `grid`. Le chargeur alimente à la fois la batterie et les pompes : la carte affiche donc `puissance chargeur − charge batterie` sur le nœud aquarium.
+- **Topologie** (Power Flow Card Plus 0.5.0 et suivantes) : `topology: battery_hub` correspond au câblage de cette sauvegarde, où la batterie est sur le bus entre le chargeur et les pompes (un onduleur DC : toute la charge passe par la batterie). La carte dessine alors secteur → batterie → aquarium, sans fil secteur → aquarium qui contournerait la batterie. Les versions plus anciennes ignorent l'option et dessinent la disposition `standard`. Ne pas utiliser `isolated_battery` : elle supprime le fil secteur ↔ batterie, celui qu'utilise le chargeur.
 - **Aquarium** : la valeur du nœud `home` est calculée par la carte. Son `entity` (le compteur d'énergie consommée) n'est que ce qu'ouvre un clic sur le nœud.
 - **Pompes ReefRun** : les entités `number` de vitesse sont utilisées directement, aucun capteur template n'est nécessaire pour elles.
 
